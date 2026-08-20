@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>FlashArb AI v4 — ChainGPT-Powered DeFi Arbitrage Platform</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>"/>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="/static/style.css"/>
+</head>
+<body>
+<div id="toast-container"></div>
+
+<!-- ══════════════════════ MODALS ══════════════════════ -->
+
+<!-- ChainGPT API Modal -->
+<div id="cgpt-modal" class="modal-overlay" style="display:none;">
+  <div class="modal-box" style="width:500px;">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;">
+      <div class="chaingpt-logo">🤖</div>
+      <div>
+        <h3 style="font-size:16px;font-weight:700;margin-bottom:2px;">Configure ChainGPT API</h3>
+        <p style="font-size:11px;color:var(--ts);">Powers AI contract generation, DeFi advisor & audit</p>
+      </div>
+      <button onclick="closeModal('cgpt-modal')" style="margin-left:auto;background:none;border:none;color:var(--ts);cursor:pointer;font-size:18px;">×</button>
+    </div>
+    <div style="background:rgba(124,58,237,0.08);border:1px solid rgba(124,58,237,0.25);border-radius:9px;padding:12px;margin-bottom:14px;font-size:12px;">
+      <i class="fas fa-info-circle" style="color:var(--purple);margin-right:6px;"></i>
+      Get your API key at <a href="https://app.chaingpt.org" target="_blank" style="color:var(--purple);text-decoration:underline;">app.chaingpt.org</a> — enables live smart contract generation, AI audit, and DeFi intelligence.
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <div>
+        <div class="field-label">ChainGPT API Key</div>
+        <input type="password" id="cgpt-key-input" placeholder="cgpt-xxxxxxxxxxxxxxxx" class="input-field"/>
+      </div>
+      <div>
+        <div class="field-label">Alchemy API Key (optional — for live RPC)</div>
+        <input type="text" id="alchemy-key-input" placeholder="alcht_xxxxxxxxxxxxxxxxxxxx" class="input-field"/>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:6px;">
+        <button class="btn-chaingpt" onclick="saveAPIKeys()" style="flex:2;"><i class="fas fa-save" style="margin-right:7px;"></i>Save & Activate</button>
+        <button class="btn-ghost" onclick="closeModal('cgpt-modal')" style="flex:1;">Demo Mode</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Deploy Modal -->
+<div id="deploy-modal" class="modal-overlay" style="display:none;">
+  <div class="modal-box" style="width:560px;">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;">
+      <div style="width:44px;height:44px;background:linear-gradient(135deg,#00e676,#00ffd1);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:22px;">🚀</div>
+      <div>
+        <h3 id="deploy-modal-title" style="font-size:16px;font-weight:700;margin-bottom:2px;">Deploy Contract</h3>
+        <p id="deploy-modal-sub" style="font-size:11px;color:var(--ts);">Configure deployment parameters</p>
+      </div>
+      <div id="deploy-net-badge" class="badge badge-cyan" style="margin-left:auto;">Testnet</div>
+    </div>
+    <div id="deploy-modal-body"></div>
+    <div style="display:flex;gap:10px;margin-top:16px;">
+      <button class="btn-ghost" onclick="closeModal('deploy-modal')" style="flex:1;">Cancel</button>
+      <button class="btn-success" onclick="proceedDeploy()" style="flex:2;font-weight:700;" id="deploy-confirm-btn">
+        <i class="fas fa-rocket" style="margin-right:7px;"></i><span id="deploy-confirm-text">Estimate Gas & Deploy</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Execute Arbitrage Modal -->
+<div id="exec-modal" class="modal-overlay" style="display:none;">
+  <div class="modal-box" style="width:520px;">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;">
+      <div style="width:44px;height:44px;background:linear-gradient(135deg,#ffb300,#ff6d00);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:22px;">⚡</div>
+      <div>
+        <h3 style="font-size:16px;font-weight:700;margin-bottom:2px;">Execute Flash Arbitrage</h3>
+        <p id="exec-net-label" style="font-size:11px;color:var(--ts);">On-chain transaction required</p>
+      </div>
+      <div id="exec-badge" class="badge badge-yellow" style="margin-left:auto;">Pending</div>
+    </div>
+    <div id="exec-details" style="background:var(--bc2);border-radius:10px;padding:14px;margin-bottom:14px;"></div>
+    <div id="exec-steps" style="margin-bottom:14px;"></div>
+    <div id="exec-result" style="display:none;margin-bottom:14px;"></div>
+    <div id="exec-btns" style="display:flex;gap:10px;">
+      <button class="btn-danger" onclick="cancelExec()" style="flex:1;">Cancel</button>
+      <button class="btn-success" onclick="confirmExec()" id="exec-confirm-btn" style="flex:2;font-weight:700;">
+        <i class="fas fa-bolt" style="margin-right:7px;"></i>Sign & Execute Flash Loan
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Audit Modal -->
+<div id="audit-modal" class="modal-overlay" style="display:none;">
+  <div class="modal-box" style="width:640px;max-height:85vh;">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;">
+      <div style="width:44px;height:44px;background:linear-gradient(135deg,#9d5cff,#00d4ff);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:22px;">🔍</div>
+      <div>
+        <h3 style="font-size:16px;font-weight:700;margin-bottom:2px;">ChainGPT Security Audit</h3>
+        <p style="font-size:11px;color:var(--ts);">AI-powered vulnerability analysis</p>
+      </div>
+      <button onclick="closeModal('audit-modal')" style="margin-left:auto;background:none;border:none;color:var(--ts);cursor:pointer;font-size:18px;">×</button>
+    </div>
+    <div id="audit-content"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════ TOP NAV ══════════════════════ -->
+<nav id="top-nav">
+  <div class="nav-inner">
+    <div style="display:flex;align-items:center;gap:10px;flex-shrink:0;">
+      <div class="logo-icon">⚡</div>
+      <div>
+        <div style="font-weight:800;font-size:15px;letter-spacing:-.3px;">FlashArb <span style="color:var(--cyan);">AI</span> <span style="font-size:10px;font-weight:400;color:var(--ts);">v4.0</span></div>
+        <div style="font-size:10px;color:var(--ts);margin-top:-1px;">ChainGPT-Powered DeFi Platform</div>
+      </div>
+    </div>
+
+    <!-- Ticker -->
+    <div class="ticker-wrap hide-mobile" style="margin:0 10px;">
+      <div class="ticker-inner" id="ticker-prices"><span style="color:var(--tm);">Loading prices...</span></div>
+    </div>
+
+    <!-- Right Controls -->
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex-shrink:0;">
+      <!-- ChainGPT badge -->
+      <div id="cgpt-badge" onclick="openModal('cgpt-modal')" style="display:flex;align-items:center;gap:5px;padding:5px 10px;background:var(--bc2);border:1px solid rgba(124,58,237,0.25);border-radius:7px;font-size:11px;cursor:pointer;" title="Configure ChainGPT API">
+        <span style="font-size:13px;">🤖</span>
+        <span id="cgpt-badge-text" style="color:var(--purple);">ChainGPT: Demo</span>
+      </div>
+      <!-- Network selector -->
+      <div style="position:relative;">
+        <div id="network-badge" onclick="toggleNetworkMenu()" style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--bc2);border:1px solid var(--bd);border-radius:8px;font-size:12px;cursor:pointer;white-space:nowrap;">
+          <span class="sdot" id="net-dot" style="background:#627eea;box-shadow:0 0 6px #627eea;"></span>
+          <span id="net-name">Ethereum</span>
+          <i class="fas fa-chevron-down" style="font-size:9px;color:var(--ts);margin-left:2px;"></i>
+          <span id="testnet-tag" class="badge badge-yellow" style="display:none;font-size:9px;padding:1px 5px;">TEST</span>
+        </div>
+        <div id="network-menu" style="display:none;position:absolute;top:calc(100%+4px);right:0;background:var(--bc);border:1px solid var(--bd);border-radius:12px;padding:8px;z-index:200;min-width:230px;box-shadow:0 8px 40px rgba(0,0,0,0.5);">
+          <div style="font-size:10px;color:var(--ts);padding:4px 8px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Mainnets</div>
+          <div id="mainnet-list"></div>
+          <div style="border-top:1px solid var(--bd);margin:6px 0;"></div>
+          <div style="font-size:10px;color:var(--ts);padding:4px 8px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Testnets</div>
+          <div id="testnet-list"></div>
+        </div>
+      </div>
+      <!-- Bot status -->
+      <div style="display:flex;align-items:center;gap:5px;padding:5px 10px;background:var(--bc2);border:1px solid var(--bd);border-radius:7px;font-size:11px;">
+        <span class="sdot" id="bot-dot" style="background:var(--tm);"></span>
+        <span id="bot-status-text" style="color:var(--ts);">Idle</span>
+      </div>
+      <!-- Gas -->
+      <div style="display:flex;align-items:center;gap:5px;padding:5px 10px;background:var(--bc2);border:1px solid var(--bd);border-radius:7px;font-size:11px;">
+        <i class="fas fa-fire" style="color:var(--yellow);font-size:10px;"></i>
+        <span id="gas-display" style="color:var(--yellow);font-family:'JetBrains Mono',monospace;">-- gwei</span>
+      </div>
+      <!-- Block -->
+      <div style="display:flex;align-items:center;gap:4px;padding:5px 10px;background:var(--bc2);border:1px solid var(--bd);border-radius:7px;font-size:11px;font-family:'JetBrains Mono',monospace;">
+        <span style="color:var(--ts);">#</span><span id="block-display" style="color:var(--teal);">...</span>
+      </div>
+      <!-- Wallet -->
+      <button id="wallet-btn" onclick="connectWallet()" class="btn-primary" style="padding:7px 14px;font-size:12px;">
+        <i class="fas fa-wallet"></i><span id="wallet-btn-text">Connect Wallet</span>
+      </button>
+    </div>
+  </div>
+</nav>
+
+<!-- ══════════════════════ MAIN ══════════════════════ -->
+<div class="main-wrap">
+  <!-- TAB BAR -->
+  <div class="tab-bar">
+    <div class="nav-tab active" onclick="switchTab(0)" id="tab-0"><i class="fas fa-chart-line mr1"></i>Monitor</div>
+    <div class="nav-tab" onclick="switchTab(1)" id="tab-1"><i class="fas fa-random mr1"></i>Opportunities<span id="opp-tab-badge" class="tab-badge" style="display:none;">0</span></div>
+    <div class="nav-tab" onclick="switchTab(2)" id="tab-2"><i class="fas fa-route mr1"></i>DEX Router</div>
+    <div class="nav-tab" onclick="switchTab(3)" id="tab-3"><i class="fas fa-play-circle mr1"></i>Manual Execute</div>
+    <div class="nav-tab" onclick="switchTab(4)" id="tab-4"><i class="fab fa-ethereum mr1"></i>Wallet</div>
+    <div class="nav-tab" onclick="switchTab(5)" id="tab-5"><i class="fas fa-robot mr1"></i>ChainGPT AI</div>
+    <div class="nav-tab" onclick="switchTab(6)" id="tab-6"><i class="fas fa-code mr1"></i>Contract Studio</div>
+    <div class="nav-tab" onclick="switchTab(7)" id="tab-7"><i class="fas fa-history mr1"></i>Ledger</div>
+  </div>
+
+  <!-- ═══════════════ SCREEN 0: MONITOR ═══════════════ -->
+  <div id="s0" class="screen active">
+    <div class="stats-grid" style="margin-bottom:16px;">
+      <div class="stat-card"><div class="stat-label">Net Profit (Session)</div><div class="stat-val green mono" id="st-profit">$0.00</div><div class="stat-sub"><span id="st-pct" style="color:var(--green);">0.00%</span> return</div></div>
+      <div class="stat-card"><div class="stat-label">Trades Executed</div><div class="stat-val cyan" id="st-trades">0</div><div class="stat-sub"><span id="st-wr">0%</span> win rate</div></div>
+      <div class="stat-card"><div class="stat-label">Flash Loan Volume</div><div class="stat-val teal mono" id="st-vol">$0</div><div class="stat-sub"><span id="st-lns">0</span> loans</div></div>
+      <div class="stat-card"><div class="stat-label">Gas Spent</div><div class="stat-val yellow mono" id="st-gas">0.0000 ETH</div><div class="stat-sub">Avg <span id="st-gwei" style="color:var(--yellow);">-- gwei</span></div></div>
+      <div class="stat-card"><div class="stat-label">Active Opps</div><div class="stat-val purple" id="st-opps">0</div><div class="stat-sub">Best: <span id="st-best" style="color:var(--green);">0.00%</span></div></div>
+      <div class="stat-card"><div class="stat-label">ETH Price</div><div class="stat-val cyan mono" id="st-ethprice">$--</div><div class="stat-sub"><span id="st-ethch" style="color:var(--ts);">-- 24h</span></div></div>
+    </div>
+    <div class="two-col">
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <!-- Bot control -->
+        <div class="glass-card" style="padding:20px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+            <div>
+              <h2 style="font-size:15px;font-weight:700;">⚡ Flash Loan Arbitrage Engine</h2>
+              <p style="font-size:11px;color:var(--ts);margin-top:2px;">Multi-DEX · Aave V3 · ChainGPT Intelligence</p>
+            </div>
+            <div style="display:flex;gap:7px;">
+              <button class="btn-ghost" onclick="toggleAuto()" id="auto-btn" style="font-size:11px;"><i class="fas fa-magic mr1"></i>Auto: <span id="auto-st">OFF</span></button>
+              <button class="btn-success" onclick="toggleBot()" id="bot-btn" style="font-size:13px;padding:9px 20px;font-weight:700;"><i class="fas fa-play" id="bot-icon" style="margin-right:7px;"></i><span id="bot-txt">START BOT</span></button>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px;">
+            <div><div class="field-label">Min Profit %</div><input type="number" id="min-profit" value="0.5" step="0.1" min="0.1" class="input-field" style="padding:7px;"/></div>
+            <div><div class="field-label">Max Loan USD</div><input type="number" id="max-loan" value="100000" step="10000" class="input-field" style="padding:7px;"/></div>
+            <div><div class="field-label">Flash Provider</div><select id="loan-prov" class="input-field" style="padding:7px;"><option>Aave V3</option><option>dYdX</option><option>Balancer</option></select></div>
+            <div><div class="field-label">Slippage %</div><input type="number" id="slip" value="0.5" step="0.1" min="0.1" max="5" class="input-field" style="padding:7px;"/></div>
+          </div>
+          <div id="scan-bar" style="display:none;align-items:center;gap:10px;padding:9px 13px;background:rgba(0,212,255,0.06);border-radius:8px;border:1px solid rgba(0,212,255,0.15);">
+            <span class="pulse-dot"></span>
+            <span style="font-size:12px;color:var(--cyan);">Scanning DEXes on <span id="scan-net">Ethereum</span>... <span id="scan-cnt">0</span> opps</span>
+            <div style="flex:1;display:flex;justify-content:flex-end;gap:14px;">
+              <span style="font-size:10px;color:var(--ts);">Gas: <span id="scan-gas" style="color:var(--yellow);">--</span> gwei</span>
+              <span style="font-size:10px;color:var(--ts);">Block #<span id="scan-block" style="color:var(--teal);font-family:'JetBrains Mono',monospace;">--</span></span>
+            </div>
+          </div>
+        </div>
+        <!-- Price Chart -->
+        <div class="glass-card" style="padding:18px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <h3 class="card-title">Live DEX Price Spreads</h3>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <span id="price-src-badge" class="badge badge-cyan">Live</span>
+              <select id="chart-pair" class="btn-ghost" style="font-size:11px;padding:3px 7px;background:var(--bc2);" onchange="updateChartPair()">
+                <option>ETH/USDC</option><option>BTC/ETH</option><option>LINK/USDC</option><option>AAVE/ETH</option><option>ARB/USDC</option>
+              </select>
+            </div>
+          </div>
+          <div style="position:relative;height:200px;"><canvas id="spread-chart"></canvas></div>
+        </div>
+        <!-- Terminal -->
+        <div class="glass-card" style="padding:18px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:9px;">
+            <h3 class="card-title"><i class="fas fa-terminal" style="color:var(--cyan);margin-right:6px;"></i>Bot Terminal</h3>
+            <button class="btn-ghost" onclick="clearLogs()" style="font-size:10px;padding:3px 7px;">Clear</button>
+          </div>
+          <div class="terminal" id="terminal" style="max-height:220px;">
+            <div class="ll dim">[system] FlashArb AI v4.0.0 — ChainGPT Integration Active</div>
+            <div class="ll chaingpt">[chaingpt] AI advisor and contract generator initialized</div>
+            <div class="ll info">[web3] Waiting for wallet connection...</div>
+            <div class="ll dim">[bot] Configure ChainGPT API key for enhanced AI features</div>
+          </div>
+        </div>
+      </div>
+      <!-- Right col -->
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <div class="glass-card" style="padding:14px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+            <h3 class="card-title">Live Token Prices</h3>
+            <span class="mono" style="font-size:9px;color:var(--ts);" id="price-ts">--:--:--</span>
+          </div>
+          <div id="price-list"></div>
+        </div>
+        <div class="glass-card" style="padding:14px;">
+          <h3 class="card-title" style="margin-bottom:10px;"><i class="fas fa-fire" style="color:var(--yellow);margin-right:5px;"></i>Gas Tracker</h3>
+          <div id="gas-tracker"></div>
+        </div>
+        <div class="glass-card" style="padding:14px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+            <h3 class="card-title">Recent Trades</h3>
+            <button class="btn-ghost" onclick="switchTab(7)" style="font-size:10px;padding:3px 7px;">All →</button>
+          </div>
+          <div id="recent-mini"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ SCREEN 1: OPPORTUNITIES ═══════════════ -->
+  <div id="s1" class="screen">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <div>
+        <h2 style="font-size:17px;font-weight:700;">Arbitrage Opportunities</h2>
+        <p style="font-size:12px;color:var(--ts);margin-top:2px;">Real-time cross-DEX price discrepancies — live on-chain scanning</p>
+      </div>
+      <div style="display:flex;gap:7px;">
+        <button class="btn-ghost" onclick="refreshOpps()"><i class="fas fa-sync-alt mr1"></i>Refresh</button>
+        <select class="btn-ghost" id="opp-sort" onchange="sortOpps()" style="background:var(--bc2);">
+          <option value="profit">By Profit %</option><option value="net">By Net USD</option><option value="conf">By Confidence</option>
+        </select>
+        <select class="btn-ghost" id="opp-filter-prov" style="background:var(--bc2);">
+          <option value="">All Providers</option><option>Aave V3</option><option>dYdX</option><option>Balancer</option>
+        </select>
+      </div>
+    </div>
+    <div id="opps-list">
+      <div style="text-align:center;padding:60px;color:var(--ts);opacity:.5;">
+        <i class="fas fa-search-dollar" style="font-size:36px;margin-bottom:12px;display:block;"></i>
+        Start the bot to scan for live arbitrage opportunities
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ SCREEN 2: DEX ROUTER ═══════════════ -->
+  <div id="s2" class="screen">
+    <div style="display:grid;grid-template-columns:380px 1fr;gap:18px;">
+      <!-- Route builder -->
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <div class="glass-card" style="padding:20px;">
+          <h2 style="font-size:16px;font-weight:700;margin-bottom:16px;"><i class="fas fa-route" style="color:var(--cyan);margin-right:8px;"></i>DEX Route Builder</h2>
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            <div>
+              <div class="field-label">Token In</div>
+              <select id="route-token-in" class="input-field">
+                <option value="WETH">WETH — Wrapped Ether</option>
+                <option value="USDC">USDC — USD Coin</option>
+                <option value="WBTC">WBTC — Wrapped Bitcoin</option>
+                <option value="LINK">LINK — Chainlink</option>
+                <option value="AAVE">AAVE — Aave</option>
+                <option value="UNI">UNI — Uniswap</option>
+                <option value="ARB">ARB — Arbitrum</option>
+              </select>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <div style="flex:1;">
+                <div class="field-label">Amount In (USD)</div>
+                <input type="number" id="route-amount" value="10000" class="input-field" placeholder="10000"/>
+              </div>
+              <div style="display:flex;align-items:flex-end;"><button class="btn-ghost" onclick="swapRouteTokens()" style="height:36px;width:36px;padding:0;display:flex;align-items:center;justify-content:center;border-radius:50%;"><i class="fas fa-exchange-alt"></i></button></div>
+              <div style="flex:1;">
+                <div class="field-label">Token Out</div>
+                <select id="route-token-out" class="input-field">
+                  <option value="USDC">USDC — USD Coin</option>
+                  <option value="WETH">WETH — Wrapped Ether</option>
+                  <option value="WBTC">WBTC — Wrapped Bitcoin</option>
+                  <option value="LINK">LINK — Chainlink</option>
+                  <option value="DAI">DAI — Dai</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <div class="field-label">Max Slippage</div>
+              <select id="route-slippage" class="input-field">
+                <option value="0.1">0.1%</option><option value="0.5" selected>0.5%</option><option value="1">1%</option><option value="2">2%</option>
+              </select>
+            </div>
+            <div>
+              <div class="field-label">Include Intermediate Token</div>
+              <select id="route-mid" class="input-field">
+                <option value="">Direct route only</option>
+                <option value="WETH">WETH</option><option value="USDC">USDC</option><option value="DAI">DAI</option>
+              </select>
+            </div>
+            <button class="btn-primary" onclick="computeRoutes()" style="width:100%;justify-content:center;">
+              <i class="fas fa-calculator mr1"></i>Calculate Best Routes
+            </button>
+            <button class="btn-chaingpt" onclick="aiOptimizeRoute()" style="width:100%;justify-content:center;">
+              <span style="font-size:14px;margin-right:5px;">🤖</span>ChainGPT Route Optimizer
+            </button>
+          </div>
+        </div>
+        <!-- Route diagram -->
+        <div class="glass-card" style="padding:16px;" id="route-diagram-card" style="display:none;">
+          <h3 class="card-title" style="margin-bottom:10px;">Best Route Diagram</h3>
+          <div id="route-diagram" class="dex-flow"></div>
+          <div id="route-metrics" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;"></div>
+        </div>
+      </div>
+      <!-- Route results -->
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <div class="glass-card" style="padding:18px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+            <h3 class="card-title">DEX Price Comparison</h3>
+            <div id="route-loading" style="display:none;"><i class="fas fa-circle-notch animate-spin" style="color:var(--cyan);"></i></div>
+          </div>
+          <div id="route-results">
+            <div style="text-align:center;padding:40px;color:var(--tm);">
+              <i class="fas fa-route" style="font-size:32px;margin-bottom:10px;display:block;"></i>
+              Click "Calculate Best Routes" to compare DEX prices
+            </div>
+          </div>
+        </div>
+        <!-- Arbitrage detector -->
+        <div class="glass-card" style="padding:18px;" id="arb-detect-card" style="display:none;">
+          <h3 class="card-title" style="margin-bottom:12px;"><i class="fas fa-bolt" style="color:var(--yellow);margin-right:6px;"></i>Arbitrage Opportunity Detected</h3>
+          <div id="arb-detect-content"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ SCREEN 3: MANUAL EXECUTE ═══════════════ -->
+  <div id="s3" class="screen">
+    <div style="display:grid;grid-template-columns:420px 1fr;gap:18px;">
+      <!-- Config panel -->
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <div class="glass-card" style="padding:20px;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px;">
+            <div style="width:40px;height:40px;background:linear-gradient(135deg,#ff6d00,#ffb300);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:20px;">⚡</div>
+            <div>
+              <h2 style="font-size:15px;font-weight:700;">Manual Arbitrage Executor</h2>
+              <p style="font-size:11px;color:var(--ts);">Full control — testnet & mainnet</p>
+            </div>
+          </div>
+
+          <!-- Network & Contract -->
+          <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px;">
+            <div>
+              <div class="field-label">Target Network</div>
+              <select id="exec-network" class="input-field" onchange="onExecNetChange()">
+                <option value="11155111">Sepolia Testnet</option>
+                <option value="80002">Polygon Amoy Testnet</option>
+                <option value="421614">Arbitrum Sepolia</option>
+                <option value="1">Ethereum Mainnet ⚠️</option>
+                <option value="137">Polygon Mainnet ⚠️</option>
+                <option value="42161">Arbitrum One ⚠️</option>
+                <option value="8453">Base Mainnet ⚠️</option>
+              </select>
+            </div>
+            <div>
+              <div class="field-label">Flash Loan Provider</div>
+              <select id="exec-provider" class="input-field">
+                <option value="aave">Aave V3</option>
+                <option value="dydx">dYdX (0% fee)</option>
+                <option value="balancer">Balancer Flash</option>
+              </select>
+            </div>
+            <div>
+              <div class="field-label">Bot Contract Address</div>
+              <input type="text" id="exec-contract" placeholder="0x... (deploy first or paste existing)" class="input-field"/>
+              <div style="font-size:10px;color:var(--ts);margin-top:4px;">→ <a href="#" onclick="switchTab(6);return false;" style="color:var(--cyan);">Deploy contract</a> in Contract Studio tab</div>
+            </div>
+          </div>
+
+          <!-- Token & DEX selection -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;">
+            <div>
+              <div class="field-label">Borrow Token</div>
+              <select id="exec-token" class="input-field">
+                <option value="WETH">WETH</option>
+                <option value="USDC">USDC</option>
+                <option value="WBTC">WBTC</option>
+                <option value="DAI">DAI</option>
+                <option value="LINK">LINK</option>
+              </select>
+            </div>
+            <div>
+              <div class="field-label">Mid Token (optional)</div>
+              <select id="exec-mid-token" class="input-field">
+                <option value="">None (direct)</option>
+                <option value="USDC">USDC</option>
+                <option value="WETH">WETH</option>
+                <option value="DAI">DAI</option>
+              </select>
+            </div>
+            <div>
+              <div class="field-label">Buy on DEX</div>
+              <select id="exec-buy-dex" class="input-field">
+                <option>Uniswap V3</option>
+                <option>Uniswap V2</option>
+                <option>SushiSwap</option>
+                <option>Curve</option>
+              </select>
+            </div>
+            <div>
+              <div class="field-label">Sell on DEX</div>
+              <select id="exec-sell-dex" class="input-field">
+                <option>SushiSwap</option>
+                <option>Uniswap V2</option>
+                <option>Uniswap V3</option>
+                <option>Balancer</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Loan params -->
+          <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px;">
+            <div>
+              <div class="field-label">Flash Loan Amount (USD)</div>
+              <div style="display:flex;gap:6px;">
+                <input type="number" id="exec-loan-amount" value="50000" class="input-field"/>
+                <button class="btn-ghost" onclick="setMaxLoan()" style="white-space:nowrap;font-size:10px;">Max Safe</button>
+              </div>
+            </div>
+            <div>
+              <div class="field-label">Min Profit Threshold (USD)</div>
+              <input type="number" id="exec-min-profit" value="100" class="input-field"/>
+            </div>
+            <div>
+              <div class="field-label">Gas Price Strategy</div>
+              <select id="exec-gas-strategy" class="input-field">
+                <option value="standard">Standard (save gas)</option>
+                <option value="fast">Fast (higher priority)</option>
+                <option value="aggressive">Aggressive (MEV compete)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Actions -->
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <button class="btn-primary" onclick="simulateArbitrage()" style="width:100%;justify-content:center;">
+              <i class="fas fa-vial mr1"></i>Simulate (Dry Run)
+            </button>
+            <button class="btn-chaingpt" onclick="aiAnalyzeOpportunity()" style="width:100%;justify-content:center;">
+              <span style="font-size:13px;margin-right:5px;">🤖</span>ChainGPT Risk Analysis
+            </button>
+            <button class="btn-orange" onclick="executeManualArb()" id="exec-manual-btn" style="width:100%;justify-content:center;font-weight:700;">
+              <i class="fas fa-bolt mr1"></i>Execute Flash Arbitrage
+            </button>
+          </div>
+        </div>
+
+        <!-- MEV Protection -->
+        <div class="glass-card" style="padding:16px;">
+          <h3 class="card-title" style="margin-bottom:12px;"><i class="fas fa-shield-alt" style="color:var(--purple);margin-right:6px;"></i>MEV Protection</h3>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div><div style="font-size:12px;font-weight:600;">Flashbots Bundle</div><div style="font-size:10px;color:var(--ts);">Private mempool routing</div></div>
+              <div class="toggle" id="toggle-flashbots" onclick="toggleFeature('flashbots')"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div><div style="font-size:12px;font-weight:600;">Commit-Reveal</div><div style="font-size:10px;color:var(--ts);">Hide trade intent</div></div>
+              <div class="toggle" id="toggle-commit-reveal" onclick="toggleFeature('commit-reveal')"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div><div style="font-size:12px;font-weight:600;">Anti-Sandwich</div><div style="font-size:10px;color:var(--ts);">Tight slippage bounds</div></div>
+              <div class="toggle on" id="toggle-anti-sandwich" onclick="toggleFeature('anti-sandwich')"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Simulation & Execution -->
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <!-- Profit estimator -->
+        <div class="glass-card" style="padding:18px;">
+          <h3 class="card-title" style="margin-bottom:14px;"><i class="fas fa-calculator" style="color:var(--cyan);margin-right:6px;"></i>Profit Estimator</h3>
+          <div id="sim-result">
+            <div style="text-align:center;padding:30px;color:var(--tm);">
+              <i class="fas fa-vial" style="font-size:28px;margin-bottom:8px;display:block;"></i>
+              Click "Simulate" to estimate profit and gas costs
+            </div>
+          </div>
+        </div>
+        <!-- Execution steps -->
+        <div class="glass-card" style="padding:18px;">
+          <h3 class="card-title" style="margin-bottom:12px;"><i class="fas fa-list-ol" style="color:var(--yellow);margin-right:6px;"></i>Execution Pipeline</h3>
+          <div id="exec-pipeline">
+            <div class="exec-step">
+              <div class="step-num">1</div>
+              <div><div style="font-size:12px;font-weight:600;">Wallet Signature</div><div style="font-size:10px;color:var(--ts);">Authorize flash loan transaction</div></div>
+              <div id="step1-status" style="margin-left:auto;"></div>
+            </div>
+            <div class="exec-step">
+              <div class="step-num">2</div>
+              <div><div style="font-size:12px;font-weight:600;">Aave Flash Loan Request</div><div style="font-size:10px;color:var(--ts);">Borrow funds atomically</div></div>
+              <div id="step2-status" style="margin-left:auto;"></div>
+            </div>
+            <div class="exec-step">
+              <div class="step-num">3</div>
+              <div><div style="font-size:12px;font-weight:600;">DEX Buy (Flash Loan Received)</div><div style="font-size:10px;color:var(--ts);">Swap borrowed token on buy DEX</div></div>
+              <div id="step3-status" style="margin-left:auto;"></div>
+            </div>
+            <div class="exec-step">
+              <div class="step-num">4</div>
+              <div><div style="font-size:12px;font-weight:600;">DEX Sell (Arbitrage)</div><div style="font-size:10px;color:var(--ts);">Sell at higher price on sell DEX</div></div>
+              <div id="step4-status" style="margin-left:auto;"></div>
+            </div>
+            <div class="exec-step">
+              <div class="step-num">5</div>
+              <div><div style="font-size:12px;font-weight:600;">Repay Flash Loan + Fee</div><div style="font-size:10px;color:var(--ts);">Return principal + 0.05% Aave fee</div></div>
+              <div id="step5-status" style="margin-left:auto;"></div>
+            </div>
+            <div class="exec-step">
+              <div class="step-num">6</div>
+              <div><div style="font-size:12px;font-weight:600;">Profit Extraction</div><div style="font-size:10px;color:var(--ts);">Net profit sent to wallet</div></div>
+              <div id="step6-status" style="margin-left:auto;"></div>
+            </div>
+          </div>
+        </div>
+        <!-- Execution log -->
+        <div class="glass-card" style="padding:18px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:9px;">
+            <h3 class="card-title"><i class="fas fa-terminal" style="color:var(--cyan);margin-right:6px;"></i>Execution Log</h3>
+            <button class="btn-ghost" onclick="clearExecLog()" style="font-size:10px;padding:3px 7px;">Clear</button>
+          </div>
+          <div class="terminal" id="exec-terminal" style="max-height:180px;">
+            <div class="ll dim">[executor] Manual arbitrage executor ready</div>
+            <div class="ll info">[executor] Connect wallet and configure bot contract to begin</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ SCREEN 4: WALLET ═══════════════ -->
+  <div id="s4" class="screen">
+    <div style="display:grid;grid-template-columns:360px 1fr;gap:18px;">
+      <!-- Connection panel -->
+      <div class="glass-card" style="padding:22px;">
+        <h2 style="font-size:16px;font-weight:700;margin-bottom:18px;"><i class="fas fa-wallet" style="color:var(--cyan);margin-right:8px;"></i>Wallet Connection</h2>
+        <!-- Disconnected -->
+        <div id="w-disconn">
+          <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px;">
+            <button class="wallet-connect-btn metamask" onclick="connectMetaMask()">
+              <span style="font-size:20px;">🦊</span>
+              <span>MetaMask</span>
+              <span style="margin-left:auto;font-size:10px;opacity:.6;">EIP-1193</span>
+            </button>
+            <button class="wallet-connect-btn walletconnect" onclick="connectWC()">
+              <i class="fas fa-qrcode" style="font-size:18px;color:#3b99fc;"></i>
+              <span>WalletConnect v2</span>
+              <span style="margin-left:auto;font-size:10px;opacity:.6;">QR Code</span>
+            </button>
+            <button class="wallet-connect-btn coinbase" onclick="connectCB()">
+              <i class="fas fa-circle" style="font-size:18px;color:#0052ff;"></i>
+              <span>Coinbase Wallet</span>
+              <span style="margin-left:auto;font-size:10px;opacity:.6;">WaaS</span>
+            </button>
+          </div>
+          <div style="border-top:1px solid var(--bd);padding-top:14px;">
+            <div class="field-label">Import (Dev/Testnet Only)</div>
+            <div style="display:flex;flex-direction:column;gap:7px;margin-top:8px;">
+              <input type="password" id="pk-input" placeholder="Private key or 12/24-word seed phrase..." class="input-field" style="font-size:11px;"/>
+              <button class="btn-primary" onclick="importWallet()" style="width:100%;justify-content:center;font-size:12px;"><i class="fas fa-key mr1"></i>Import Wallet</button>
+              <div style="font-size:10px;color:var(--tm);text-align:center;">⚠️ Never use real funds in import mode</div>
+            </div>
+          </div>
+        </div>
+        <!-- Connected -->
+        <div id="w-conn" style="display:none;">
+          <div style="text-align:center;margin-bottom:16px;">
+            <div id="w-avatar" style="width:60px;height:60px;background:linear-gradient(135deg,#00d4ff,#7c3aed);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 10px;font-size:26px;">🦊</div>
+            <div style="font-size:11px;color:var(--ts);">via <span id="w-prov">MetaMask</span></div>
+            <div id="w-addr-box" class="wallet-addr" style="margin:8px auto;display:inline-block;cursor:pointer;" onclick="copyAddr()" title="Click to copy"></div>
+            <div id="w-netbadge" class="badge badge-cyan" style="margin-top:6px;"></div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;">
+            <div class="stat-card" style="text-align:center;padding:10px;"><div style="font-size:10px;color:var(--ts);">Native Balance</div><div class="mono" style="font-size:18px;font-weight:700;color:var(--cyan);" id="w-native">0.0000</div><div style="font-size:10px;color:var(--ts);" id="w-native-sym">ETH</div></div>
+            <div class="stat-card" style="text-align:center;padding:10px;"><div style="font-size:10px;color:var(--ts);">USD Value</div><div class="mono" style="font-size:18px;font-weight:700;color:var(--teal);" id="w-usd">$0.00</div><div style="font-size:10px;color:var(--ts);">Estimated</div></div>
+          </div>
+          <div style="margin-bottom:12px;">
+            <div class="field-label">Switch Network</div>
+            <select id="w-netsel" onchange="switchWalletNetwork()" class="input-field" style="font-size:12px;"></select>
+          </div>
+          <button class="btn-danger" onclick="disconnWallet()" style="width:100%;font-size:12px;justify-content:center;"><i class="fas fa-unlink mr1"></i>Disconnect</button>
+        </div>
+      </div>
+      <!-- Portfolio -->
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <div class="glass-card" style="padding:18px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+            <h3 class="card-title">Token Portfolio <span id="portfolio-net" style="color:var(--ts);font-size:11px;font-weight:400;"></span></h3>
+            <button class="btn-ghost" onclick="refreshPortfolio()" style="font-size:11px;padding:4px 9px;"><i class="fas fa-sync-alt mr1"></i>Refresh</button>
+          </div>
+          <div id="portfolio-list"><div style="text-align:center;padding:24px;color:var(--tm);font-size:13px;">Connect wallet to view on-chain portfolio</div></div>
+        </div>
+        <div class="glass-card" style="padding:18px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:9px;">
+            <h3 class="card-title"><i class="fas fa-terminal" style="color:var(--cyan);margin-right:6px;"></i>Web3 Console</h3>
+            <div id="rpc-status" class="badge badge-yellow">RPC Idle</div>
+          </div>
+          <div class="terminal" id="w3-console" style="max-height:160px;">
+            <div class="ll dim">[web3] Initializing Web3 provider...</div>
+            <div class="ll info">[eip1193] Checking window.ethereum injection...</div>
+          </div>
+        </div>
+        <div class="glass-card" style="padding:14px;" id="faucet-panel" style="display:none;">
+          <h3 class="card-title" style="margin-bottom:10px;"><i class="fas fa-faucet" style="color:var(--cyan);margin-right:6px;"></i>Testnet Faucets</h3>
+          <div id="faucet-list" style="display:flex;flex-direction:column;gap:6px;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ SCREEN 5: CHAINGPT AI ═══════════════ -->
+  <div id="s5" class="screen">
+    <div style="display:grid;grid-template-columns:1fr 300px;gap:18px;">
+      <!-- Chat panel -->
+      <div class="glass-card" style="padding:22px;">
+        <div class="chaingpt-header">
+          <div class="chaingpt-logo">🤖</div>
+          <div>
+            <h2 style="font-size:16px;font-weight:700;">ChainGPT DeFi Advisor</h2>
+            <p style="font-size:11px;color:var(--ts);">Blockchain AI — arbitrage intelligence, contract expertise & DeFi analytics</p>
+          </div>
+          <div id="cgpt-status-badge" class="badge badge-yellow" style="margin-left:auto;">Demo Mode</div>
+        </div>
+        <div class="ai-chat-area" id="ai-chat">
+          <div class="ai-msg">
+            <div class="ai-avatar bot">🤖</div>
+            <div class="ai-bubble bot">
+              <h3>Welcome to ChainGPT DeFi Advisor!</h3>
+              I'm your AI-powered DeFi intelligence assistant. I can help with:<br/><br/>
+              <strong>🔍 Opportunity Analysis</strong> — Real-time arb route profitability<br/>
+              <strong>🛡️ MEV Protection</strong> — Flashbots, commit-reveal, private mempools<br/>
+              <strong>📝 Contract Generation</strong> — AI-written Solidity with security audits<br/>
+              <strong>⛽ Gas Optimization</strong> — Multi-chain cost comparison<br/>
+              <strong>🎯 Strategy Building</strong> — Custom arbitrage logic design<br/><br/>
+              <span style="color:var(--purple);">Connect your ChainGPT API key</span> for full AI capabilities, or ask me anything in demo mode!
+            </div>
+          </div>
+        </div>
+        <div id="ai-typing" style="display:none;padding:8px 0;">
+          <div class="ai-msg">
+            <div class="ai-avatar bot">🤖</div>
+            <div class="ai-bubble bot"><i class="fas fa-circle-notch animate-spin" style="color:var(--purple);margin-right:6px;"></i>ChainGPT is analyzing...</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px;">
+          <textarea id="ai-input" placeholder="Ask about arbitrage strategies, MEV protection, gas optimization, contract design..." class="input-field" style="resize:none;height:56px;flex:1;" onkeydown="aiKey(event)"></textarea>
+          <button class="btn-chaingpt" onclick="sendAI()" style="height:56px;padding:0 18px;"><i class="fas fa-paper-plane"></i></button>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:9px;">
+          <button class="btn-ghost" onclick="aiQ('What is the best arbitrage pair on Ethereum right now?')" style="font-size:10px;padding:3px 8px;">Best pair now</button>
+          <button class="btn-ghost" onclick="aiQ('How to protect against MEV sandwich attacks on flash loans?')" style="font-size:10px;padding:3px 8px;">MEV protection</button>
+          <button class="btn-ghost" onclick="aiQ('Compare gas costs: Arbitrum vs Base vs Polygon for flash loan arb')" style="font-size:10px;padding:3px 8px;">Chain gas compare</button>
+          <button class="btn-ghost" onclick="aiQ('What is optimal flash loan size for a 0.8% spread opportunity?')" style="font-size:10px;padding:3px 8px;">Optimal loan size</button>
+          <button class="btn-ghost" onclick="aiQ('Explain Aave V3 flash loan mechanics and fee structure')" style="font-size:10px;padding:3px 8px;">Aave V3 mechanics</button>
+          <button class="btn-ghost" onclick="aiQ('Generate a safe flash arbitrage smart contract with reentrancy guard')" style="font-size:10px;padding:3px 8px;">Generate contract</button>
+        </div>
+      </div>
+      <!-- Side panels -->
+      <div style="display:flex;flex-direction:column;gap:13px;">
+        <div class="glass-card" style="padding:14px;">
+          <h3 class="card-title" style="margin-bottom:12px;">Live Market Intel</h3>
+          <div id="mkt-intel"></div>
+        </div>
+        <div class="glass-card" style="padding:14px;">
+          <h3 class="card-title" style="margin-bottom:12px;">AI Recommendations</h3>
+          <div id="ai-recs"></div>
+        </div>
+        <div class="glass-card" style="padding:14px;">
+          <h3 class="card-title" style="margin-bottom:9px;">Strategy Score</h3>
+          <div style="display:flex;flex-direction:column;gap:7px;">
+            <div><div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px;"><span style="color:var(--ts);">Profitability</span><span id="sc-p" class="green">--</span></div><div class="progress-bar"><div class="progress-fill" id="pb-p" style="background:var(--green);width:0%;"></div></div></div>
+            <div><div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px;"><span style="color:var(--ts);">Risk Level</span><span id="sc-r" class="yellow">--</span></div><div class="progress-bar"><div class="progress-fill" id="pb-r" style="background:var(--yellow);width:0%;"></div></div></div>
+            <div><div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px;"><span style="color:var(--ts);">Market Eff.</span><span id="sc-m" class="cyan">--</span></div><div class="progress-bar"><div class="progress-fill" id="pb-m" style="background:var(--cyan);width:0%;"></div></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ SCREEN 6: CONTRACT STUDIO ═══════════════ -->
+  <div id="s6" class="screen">
+    <div style="display:grid;grid-template-columns:1fr 320px;gap:18px;">
+      <!-- Left: editor + generator -->
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <!-- ChainGPT Generator -->
+        <div class="chaingpt-panel">
+          <div class="chaingpt-header">
+            <div class="chaingpt-logo">🤖</div>
+            <div>
+              <h2 style="font-size:15px;font-weight:700;">ChainGPT Contract Generator</h2>
+              <p style="font-size:11px;color:var(--ts);">AI-generated production-ready Solidity smart contracts</p>
+            </div>
+            <div id="cgpt-contract-badge" class="badge badge-chaingpt" style="margin-left:auto;">AI Ready</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            <div>
+              <div class="field-label">Contract Type</div>
+              <div class="contract-type-grid" id="contract-type-grid">
+                <div class="contract-type-card selected" data-type="flash_arbitrage" onclick="selectContractType(this,'flash_arbitrage')">
+                  <div class="ct-icon">⚡</div>
+                  <div class="ct-name">Flash Arbitrage</div>
+                  <div class="ct-desc">Aave V3 + multi-DEX</div>
+                </div>
+                <div class="contract-type-card" data-type="triangular" onclick="selectContractType(this,'triangular')">
+                  <div class="ct-icon">🔺</div>
+                  <div class="ct-name">Triangular Arb</div>
+                  <div class="ct-desc">3-token rotation</div>
+                </div>
+                <div class="contract-type-card" data-type="cross_chain" onclick="selectContractType(this,'cross_chain')">
+                  <div class="ct-icon">🌉</div>
+                  <div class="ct-name">Cross-Chain</div>
+                  <div class="ct-desc">Bridge arbitrage</div>
+                </div>
+                <div class="contract-type-card" data-type="sandwich" onclick="selectContractType(this,'sandwich')">
+                  <div class="ct-icon">🥪</div>
+                  <div class="ct-name">MEV Strategy</div>
+                  <div class="ct-desc">Front-run protection</div>
+                </div>
+                <div class="contract-type-card" data-type="yield" onclick="selectContractType(this,'yield')">
+                  <div class="ct-icon">📈</div>
+                  <div class="ct-name">Yield Optimizer</div>
+                  <div class="ct-desc">Auto-compound</div>
+                </div>
+                <div class="contract-type-card" data-type="custom" onclick="selectContractType(this,'custom')">
+                  <div class="ct-icon">✏️</div>
+                  <div class="ct-name">Custom</div>
+                  <div class="ct-desc">Describe your own</div>
+                </div>
+              </div>
+            </div>
+            <div>
+              <div class="field-label">Describe your contract requirements</div>
+              <textarea id="contract-prompt" class="input-field" style="height:70px;" placeholder="e.g. Flash loan bot that buys WETH on Uniswap V3 and sells on SushiSwap when spread > 0.5%, with MEV protection and emergency withdraw..."></textarea>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <select id="gen-network" class="input-field" style="flex:1;">
+                <option value="ethereum">Ethereum Mainnet</option>
+                <option value="arbitrum">Arbitrum One</option>
+                <option value="polygon">Polygon</option>
+                <option value="base">Base</option>
+                <option value="sepolia">Sepolia Testnet</option>
+              </select>
+              <button class="btn-chaingpt" onclick="generateContract()" id="gen-btn" style="flex:1.5;justify-content:center;font-weight:700;">
+                <span style="font-size:14px;margin-right:6px;">🤖</span>Generate with ChainGPT
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Contract Editor -->
+        <div class="glass-card" style="padding:0;overflow:hidden;">
+          <div class="code-header">
+            <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
+            <span class="mono" style="font-size:11px;color:var(--ts);margin-left:8px;" id="contract-filename">FlashArbitrageBot.sol</span>
+            <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
+              <span class="badge badge-green" style="font-size:9px;">Solidity ^0.8.20</span>
+              <span id="contract-gen-badge" class="badge badge-chaingpt" style="font-size:9px;display:none;">ChainGPT Generated</span>
+              <button class="btn-ghost" onclick="copyContract()" style="font-size:10px;padding:3px 7px;"><i class="fas fa-copy mr1"></i>Copy</button>
+              <button class="btn-ghost" onclick="runAudit()" style="font-size:10px;padding:3px 7px;"><i class="fas fa-search mr1"></i>AI Audit</button>
+            </div>
+          </div>
+          <div style="background:#060d16;overflow:auto;max-height:520px;">
+            <pre id="contract-src" style="margin:0;padding:18px;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.75;color:#e2e8f0;tab-size:2;"></pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Deploy panel -->
+      <div style="display:flex;flex-direction:column;gap:13px;">
+        <div class="glass-card" style="padding:16px;">
+          <h3 class="card-title" style="margin-bottom:12px;"><i class="fas fa-network-wired mr1" style="color:var(--cyan);"></i>Deployment Network</h3>
+          <select id="deploy-net" class="input-field" style="font-size:12px;margin-bottom:10px;" onchange="onDeployNetChange()"></select>
+          <div id="deploy-net-info" style="display:flex;flex-direction:column;gap:6px;font-size:12px;"></div>
+        </div>
+
+        <div class="glass-card" style="padding:16px;">
+          <h3 class="card-title" style="margin-bottom:12px;"><i class="fas fa-fire mr1" style="color:var(--yellow);"></i>Deployment Cost</h3>
+          <div id="deploy-cost-info" style="display:flex;flex-direction:column;gap:7px;font-size:12px;"></div>
+          <button class="btn-ghost" onclick="estimateDeployCost()" style="width:100%;margin-top:10px;font-size:11px;justify-content:center;"><i class="fas fa-calculator mr1"></i>Recalculate</button>
+        </div>
+
+        <div class="glass-card" style="padding:16px;">
+          <h3 class="card-title" style="margin-bottom:10px;"><i class="fas fa-cog mr1" style="color:var(--purple);"></i>Constructor Args</h3>
+          <div style="display:flex;flex-direction:column;gap:7px;" id="deploy-args"></div>
+        </div>
+
+        <div class="glass-card" style="padding:16px;">
+          <h3 class="card-title" style="margin-bottom:10px;">Deploy Actions</h3>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <button class="btn-primary" onclick="openDeployModal(false)" style="font-size:12px;justify-content:center;"><i class="fas fa-flask mr1"></i>Deploy to Testnet</button>
+            <button class="btn-success" onclick="openDeployModal(true)" style="font-size:12px;font-weight:700;justify-content:center;"><i class="fas fa-rocket mr1"></i>Deploy to Mainnet</button>
+            <button class="btn-ghost" onclick="verifyOnEtherscan()" style="font-size:11px;justify-content:center;"><i class="fas fa-check-circle mr1"></i>Verify on Etherscan</button>
+          </div>
+        </div>
+
+        <div class="glass-card" style="padding:16px;">
+          <h3 class="card-title" style="margin-bottom:10px;">Deployed Contracts</h3>
+          <div id="deployed-list"><div style="font-size:11px;color:var(--tm);text-align:center;padding:10px;">No contracts deployed yet</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ SCREEN 7: LEDGER ═══════════════ -->
+  <div id="s7" class="screen">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <div>
+        <h2 style="font-size:17px;font-weight:700;">Trade Ledger</h2>
+        <p style="font-size:12px;color:var(--ts);margin-top:2px;">Full on-chain flash loan execution history</p>
+      </div>
+      <div style="display:flex;gap:7px;">
+        <button class="btn-ghost" onclick="exportCSV()"><i class="fas fa-download mr1"></i>Export CSV</button>
+        <button class="btn-danger" onclick="clearLedger()" style="font-size:12px;">Clear</button>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:9px;margin-bottom:14px;" id="ledger-sum"></div>
+    <div class="glass-card" style="padding:0;overflow:hidden;">
+      <div style="overflow-x:auto;">
+        <table class="dtable">
+          <thead><tr><th>#</th><th>Time</th><th>Network</th><th>Pair</th><th>Route</th><th>Provider</th><th>Loan</th><th>Gross Profit</th><th>Gas</th><th>Net P&amp;L</th><th>Tx Hash</th><th>Status</th></tr></thead>
+          <tbody id="ltbody"><tr><td colspan="12" style="text-align:center;padding:40px;color:var(--tm);">No trades yet — start the bot or execute manually to begin</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
