@@ -55,7 +55,9 @@ const STATE = {
   execLog: [],
 };
 
-const PRICE_MAP = { ETH:3100, BTC:65000, MATIC:0.08, LINK:14, AAVE:95, UNI:8, DAI:1, USDC:1, ARB:1.2, OP:2.1, BNB:580, sETH:0 };
+// ─── PRICE MAP (seed values — updated to current real prices, refreshed live) ─
+const PRICE_MAP = { ETH:2450, BTC:77000, MATIC:0.37, LINK:14, AAVE:170, UNI:7.5, DAI:1, USDC:1, ARB:0.095, OP:0.95, BNB:580, sETH:0 };
+const PRICE_STATE = { lastFetchOk: false, lastFetchTime: null, source: 'seed' };
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -87,13 +89,20 @@ document.addEventListener('DOMContentLoaded', () => {
   log('terminal', 'chaingpt', '[chaingpt] ChainGPT integration ready — configure API key for AI features');
   log('terminal', 'dim', '[web3] Checking wallet provider...');
 
-  if(STATE.chainGPTKey) {
+  if (STATE.chainGPTKey) {
     document.getElementById('cgpt-badge-text').textContent = 'ChainGPT: Live';
     document.getElementById('cgpt-badge-text').style.color = 'var(--green)';
     document.getElementById('cgpt-status-badge').textContent = 'Live AI';
     document.getElementById('cgpt-status-badge').className = 'badge badge-green';
+    const cgInp = document.getElementById('cgpt-key-input');
+    if (cgInp) cgInp.value = STATE.chainGPTKey;
   }
-  if(window.ethereum) log('terminal', 'success', '[web3] Wallet provider detected — click Connect Wallet');
+  if (STATE.alchemyKey) {
+    const alchInp = document.getElementById('alchemy-key-input');
+    if (alchInp) alchInp.value = STATE.alchemyKey;
+    log('terminal', 'success', '[rpc] Alchemy key loaded from storage — live data active');
+  }
+  if (window.ethereum) log('terminal', 'success', '[web3] Wallet provider detected — click Connect Wallet');
   else log('terminal', 'warn', '[web3] No wallet provider — install MetaMask or use import mode');
 });
 
@@ -213,11 +222,15 @@ function saveAPIKeys() {
     document.getElementById('cgpt-contract-badge').className = 'badge badge-green';
     log('terminal', 'chaingpt', '[chaingpt] API key configured — live AI enabled');
   }
-  if(alch) {
+  if (alch) {
     STATE.alchemyKey = alch;
     localStorage.setItem('flasharb_alchemy_key', alch);
-    toast('Alchemy API key saved — live RPC active!', 'success');
-    log('terminal', 'success', '[rpc] Alchemy API key set — live on-chain data active');
+    toast('Alchemy API key saved — fetching live prices & gas...', 'success');
+    log('terminal', 'success', '[rpc] Alchemy key set — triggering live price/gas/block refresh');
+    // Immediately refresh all data with new key
+    fetchPrices();
+    fetchGasPrice();
+    updateBlockNumber();
   }
   closeModal('cgpt-modal');
 }
@@ -229,36 +242,104 @@ function updateBadges() {
   }
 }
 
-// ─── PRICES ───────────────────────────────────────────────────────────────────
+// ─── PRICES — browser-direct (bypasses Cloudflare Workers sandbox limitation) ─
+// Priority: 1) Alchemy price API (when key set)  2) CoinGecko (CORS-open)  3) seed
 async function fetchPrices() {
-  try {
-    const r = await fetch(`${API}/api/prices`);
-    const d = await r.json();
-    if(d.ethereum) { PRICE_MAP.ETH = d.ethereum.usd || PRICE_MAP.ETH; }
-    if(d.bitcoin)  { PRICE_MAP.BTC = d.bitcoin.usd  || PRICE_MAP.BTC; }
-    if(d['matic-network']) PRICE_MAP.MATIC = d['matic-network'].usd || PRICE_MAP.MATIC;
-    if(d.chainlink) PRICE_MAP.LINK = d.chainlink.usd || PRICE_MAP.LINK;
-    if(d.aave) PRICE_MAP.AAVE = d.aave.usd || PRICE_MAP.AAVE;
-    if(d.uniswap) PRICE_MAP.UNI = d.uniswap.usd || PRICE_MAP.UNI;
-    if(d.arbitrum) PRICE_MAP.ARB = d.arbitrum.usd || PRICE_MAP.ARB;
-    if(d.bnb) PRICE_MAP.BNB = d.bnb.usd || PRICE_MAP.BNB;
+  const alchKey = STATE.alchemyKey;
+  let fetched = false;
 
-    renderPriceList(d);
-    renderTicker(d);
-    updateStatCards();
-    document.getElementById('price-src-badge').textContent = 'Live';
-    document.getElementById('price-ts').textContent = new Date().toLocaleTimeString();
-
-    // Update ETH stat
-    document.getElementById('st-ethprice').textContent = '$'+PRICE_MAP.ETH.toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0});
-    if(d.ethereum?.usd_24h_change) {
-      const ch = d.ethereum.usd_24h_change;
-      document.getElementById('st-ethch').textContent = (ch>0?'+':'')+ch.toFixed(2)+'% 24h';
-      document.getElementById('st-ethch').style.color = ch>0 ? 'var(--green)' : 'var(--red)';
-    }
-  } catch(e) {
-    document.getElementById('price-src-badge').textContent = 'Demo';
+  // --- Primary: Alchemy Prices API ---
+  if (alchKey) {
+    try {
+      const symbols = 'ETH,BTC,MATIC,LINK,AAVE,UNI,ARB,BNB';
+      const url = `https://api.g.alchemy.com/prices/v1/${alchKey}/tokens/by-symbol?symbols=${symbols}`;
+      const r = await fetch(url);
+      if (r.ok) {
+        const d = await r.json();
+        const map = {};
+        (d.data || []).forEach(t => { map[t.symbol] = t; });
+        if (map.ETH)   PRICE_MAP.ETH   = parseFloat(map.ETH.prices?.[0]?.value   || PRICE_MAP.ETH);
+        if (map.BTC)   PRICE_MAP.BTC   = parseFloat(map.BTC.prices?.[0]?.value   || PRICE_MAP.BTC);
+        if (map.MATIC) PRICE_MAP.MATIC = parseFloat(map.MATIC.prices?.[0]?.value || PRICE_MAP.MATIC);
+        if (map.LINK)  PRICE_MAP.LINK  = parseFloat(map.LINK.prices?.[0]?.value  || PRICE_MAP.LINK);
+        if (map.AAVE)  PRICE_MAP.AAVE  = parseFloat(map.AAVE.prices?.[0]?.value  || PRICE_MAP.AAVE);
+        if (map.UNI)   PRICE_MAP.UNI   = parseFloat(map.UNI.prices?.[0]?.value   || PRICE_MAP.UNI);
+        if (map.ARB)   PRICE_MAP.ARB   = parseFloat(map.ARB.prices?.[0]?.value   || PRICE_MAP.ARB);
+        if (map.BNB)   PRICE_MAP.BNB   = parseFloat(map.BNB.prices?.[0]?.value   || PRICE_MAP.BNB);
+        PRICE_STATE.source = 'Alchemy'; PRICE_STATE.lastFetchOk = true; fetched = true;
+        // Build CoinGecko-shaped data for renderPriceList
+        const cg = {
+          ethereum: { usd: PRICE_MAP.ETH, usd_24h_change: 0 },
+          bitcoin:  { usd: PRICE_MAP.BTC, usd_24h_change: 0 },
+          'matic-network': { usd: PRICE_MAP.MATIC, usd_24h_change: 0 },
+          chainlink: { usd: PRICE_MAP.LINK, usd_24h_change: 0 },
+          aave:      { usd: PRICE_MAP.AAVE, usd_24h_change: 0 },
+          uniswap:   { usd: PRICE_MAP.UNI,  usd_24h_change: 0 },
+          arbitrum:  { usd: PRICE_MAP.ARB,  usd_24h_change: 0 },
+          bnb:       { usd: PRICE_MAP.BNB,  usd_24h_change: 0 },
+        };
+        renderPriceList(cg); renderTicker(cg);
+        applyPriceMap('Alchemy');
+      }
+    } catch (e) { /* fall through to CoinGecko */ }
   }
+
+  // --- Fallback: CoinGecko (free, CORS-open, always works from browser) ---
+  if (!fetched) {
+    try {
+      const ids = 'ethereum,bitcoin,matic-network,chainlink,aave,uniswap,arbitrum,binancecoin,optimism';
+      const url = `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true`;
+      const r = await fetch(url);
+      if (r.ok) {
+        const d = await r.json();
+        if (d.ethereum)          PRICE_MAP.ETH   = d.ethereum.usd        || PRICE_MAP.ETH;
+        if (d.bitcoin)           PRICE_MAP.BTC   = d.bitcoin.usd          || PRICE_MAP.BTC;
+        if (d['matic-network'])  PRICE_MAP.MATIC = d['matic-network'].usd || PRICE_MAP.MATIC;
+        if (d.chainlink)         PRICE_MAP.LINK  = d.chainlink.usd        || PRICE_MAP.LINK;
+        if (d.aave)              PRICE_MAP.AAVE  = d.aave.usd             || PRICE_MAP.AAVE;
+        if (d.uniswap)           PRICE_MAP.UNI   = d.uniswap.usd          || PRICE_MAP.UNI;
+        if (d.arbitrum)          PRICE_MAP.ARB   = d.arbitrum.usd         || PRICE_MAP.ARB;
+        if (d.binancecoin)       PRICE_MAP.BNB   = d.binancecoin.usd      || PRICE_MAP.BNB;
+        if (d.optimism)          PRICE_MAP.OP    = d.optimism.usd         || PRICE_MAP.OP;
+        PRICE_STATE.source = 'CoinGecko'; PRICE_STATE.lastFetchOk = true; fetched = true;
+        const cg = {
+          ethereum: d.ethereum, bitcoin: d.bitcoin, 'matic-network': d['matic-network'],
+          chainlink: d.chainlink, aave: d.aave, uniswap: d.uniswap,
+          arbitrum: d.arbitrum, bnb: d.binancecoin,
+        };
+        renderPriceList(cg); renderTicker(cg);
+        if (d.ethereum?.usd_24h_change !== undefined) {
+          const ch = d.ethereum.usd_24h_change;
+          const el = document.getElementById('st-ethch');
+          if (el) { el.textContent = (ch > 0 ? '+' : '') + ch.toFixed(2) + '% 24h'; el.style.color = ch > 0 ? 'var(--green)' : 'var(--red)'; }
+        }
+        applyPriceMap('CoinGecko');
+      }
+    } catch (e) { /* use seed values */ }
+  }
+
+  if (!fetched) {
+    const seedData = {
+      ethereum: { usd: PRICE_MAP.ETH, usd_24h_change: 0 }, bitcoin: { usd: PRICE_MAP.BTC, usd_24h_change: 0 },
+      'matic-network': { usd: PRICE_MAP.MATIC, usd_24h_change: 0 }, chainlink: { usd: PRICE_MAP.LINK, usd_24h_change: 0 },
+      aave: { usd: PRICE_MAP.AAVE, usd_24h_change: 0 }, uniswap: { usd: PRICE_MAP.UNI, usd_24h_change: 0 },
+      arbitrum: { usd: PRICE_MAP.ARB, usd_24h_change: 0 }, bnb: { usd: PRICE_MAP.BNB, usd_24h_change: 0 },
+    };
+    renderPriceList(seedData); renderTicker(seedData);
+    applyPriceMap('Seed');
+  }
+}
+
+function applyPriceMap(source) {
+  PRICE_STATE.lastFetchTime = new Date();
+  const srcEl = document.getElementById('price-src-badge');
+  const tsEl  = document.getElementById('price-ts');
+  if (srcEl) srcEl.textContent = source === 'Seed' ? 'Seed' : 'Live (' + source + ')';
+  if (tsEl)  tsEl.textContent  = new Date().toLocaleTimeString();
+  updateStatCards();
+  const ethEl = document.getElementById('st-ethprice');
+  if (ethEl) ethEl.textContent = '$' + PRICE_MAP.ETH.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  estimateDeployCost();
 }
 
 const COIN_IDS = {ethereum:'ETH', bitcoin:'BTC', 'matic-network':'MATIC', chainlink:'LINK', aave:'AAVE', uniswap:'UNI', arbitrum:'ARB', bnb:'BNB'};
@@ -307,16 +388,77 @@ function updateTicker() {
   });
 }
 
-// ─── GAS ──────────────────────────────────────────────────────────────────────
+// ─── GAS — browser-direct Alchemy/public RPC (bypasses Worker sandbox) ──────
 async function fetchGasPrice() {
-  try {
-    const r = await fetch(`${API}/api/gas/${STATE.currentChainId}`);
-    const d = await r.json();
-    STATE.gasGwei = d.mid;
-    document.getElementById('gas-display').textContent = d.mid + ' gwei';
-    renderGasTracker(d);
-  } catch(e) {
-    document.getElementById('gas-display').textContent = STATE.gasGwei + ' gwei';
+  const chainId = STATE.currentChainId;
+  const alchKey = STATE.alchemyKey;
+  let gotGas = false;
+
+  // Alchemy RPC — Ethereum mainnet when key is set
+  if (alchKey && chainId === '1') {
+    try {
+      const rpcUrl = `https://eth-mainnet.g.alchemy.com/v2/${alchKey}`;
+      const [gasRes, tipRes] = await Promise.allSettled([
+        fetch(rpcUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_gasPrice', params: [], id: 1 }) }),
+        fetch(rpcUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_maxPriorityFeePerGas', params: [], id: 2 }) }),
+      ]);
+      if (gasRes.status === 'fulfilled' && gasRes.value.ok) {
+        const gd = await gasRes.value.json();
+        const tipGwei = tipRes.status === 'fulfilled' && tipRes.value.ok
+          ? parseInt((await tipRes.value.json()).result || '0x5F5E100', 16) / 1e9
+          : 1.5;
+        if (gd.result) {
+          const mid = parseInt(gd.result, 16) / 1e9;
+          const gas = { low: +(mid * 0.85).toFixed(2), mid: +mid.toFixed(2), high: +(mid + tipGwei).toFixed(2) };
+          STATE.gasGwei = gas.mid;
+          const el = document.getElementById('gas-display');
+          if (el) el.textContent = gas.mid.toFixed(1) + ' gwei';
+          renderGasTracker(gas);
+          gotGas = true;
+          log('terminal', 'dim', `[gas] Alchemy live: ${gas.low}/${gas.mid}/${gas.high} gwei`);
+        }
+      }
+    } catch (e) { /* fall through */ }
+  }
+
+  // Public RPC fallback for other chains or when no Alchemy key
+  if (!gotGas) {
+    try {
+      const rpc = alchKey && chainId === '137'
+        ? `https://polygon-mainnet.g.alchemy.com/v2/${alchKey}`
+        : alchKey && chainId === '42161'
+        ? `https://arb-mainnet.g.alchemy.com/v2/${alchKey}`
+        : getRPC(chainId);
+      const r = await fetch(rpc, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_gasPrice', params: [], id: 1 }) });
+      if (r.ok) {
+        const d = await r.json();
+        if (d.result) {
+          const mid = parseInt(d.result, 16) / 1e9;
+          const gas = { low: +(mid * 0.85).toFixed(2), mid: +mid.toFixed(2), high: +(mid * 1.3).toFixed(2) };
+          STATE.gasGwei = gas.mid;
+          const el = document.getElementById('gas-display');
+          if (el) el.textContent = gas.mid.toFixed(1) + ' gwei';
+          renderGasTracker(gas);
+          gotGas = true;
+        }
+      }
+    } catch (e) { /* use cached value */ }
+  }
+
+  // Backend fallback (may work on real Cloudflare deployment)
+  if (!gotGas) {
+    try {
+      const r = await fetch(`${API}/api/gas/${chainId}`);
+      if (r.ok) {
+        const d = await r.json();
+        if (d.mid) { STATE.gasGwei = d.mid; renderGasTracker(d); }
+      }
+    } catch (e) { /* keep cached value */ }
+    const el = document.getElementById('gas-display');
+    if (el) el.textContent = STATE.gasGwei.toFixed ? STATE.gasGwei.toFixed(1) + ' gwei' : STATE.gasGwei + ' gwei';
   }
 }
 
@@ -338,11 +480,39 @@ function renderGasTracker(d) {
 }
 
 async function updateBlockNumber() {
-  STATE.blockNumber += 1;
+  // Try real block number via public/Alchemy RPC
+  try {
+    const alchKey = STATE.alchemyKey;
+    const chainId = STATE.currentChainId;
+    const rpcUrl = alchKey && chainId === '1'
+      ? `https://eth-mainnet.g.alchemy.com/v2/${alchKey}`
+      : alchKey && chainId === '137'
+      ? `https://polygon-mainnet.g.alchemy.com/v2/${alchKey}`
+      : getRPC(chainId);
+    const r = await fetch(rpcUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_blockNumber', params: [], id: 1 }) });
+    if (r.ok) {
+      const d = await r.json();
+      if (d.result) {
+        const blockNum = parseInt(d.result, 16);
+        STATE.blockNumber = blockNum;
+        const el = document.getElementById('block-display');
+        if (el) el.textContent = blockNum.toLocaleString();
+        document.querySelectorAll('.scan-block').forEach(e => e.textContent = blockNum.toLocaleString());
+        const sb = document.getElementById('scan-block');
+        if (sb) sb.textContent = blockNum.toLocaleString();
+        return;
+      }
+    }
+  } catch (e) { /* fallback below */ }
+  // Fallback: increment from estimated current block
+  if (STATE.blockNumber < 1000) STATE.blockNumber = Math.floor(Date.now() / 12000) + 16000000;
+  else STATE.blockNumber += 1;
   const el = document.getElementById('block-display');
-  if(el) el.textContent = (22000000 + STATE.blockNumber).toLocaleString();
-  document.querySelectorAll('.scan-block').forEach(e => e.textContent = (22000000 + STATE.blockNumber).toLocaleString());
-  document.getElementById('scan-block') && (document.getElementById('scan-block').textContent = (22000000+STATE.blockNumber).toLocaleString());
+  if (el) el.textContent = STATE.blockNumber.toLocaleString();
+  document.querySelectorAll('.scan-block').forEach(e => e.textContent = STATE.blockNumber.toLocaleString());
+  const sb = document.getElementById('scan-block');
+  if (sb) sb.textContent = STATE.blockNumber.toLocaleString();
 }
 
 // ─── STAT CARDS ───────────────────────────────────────────────────────────────
@@ -413,37 +583,188 @@ function toggleAuto() {
   else toast('Auto-execute disabled', 'info', 2000);
 }
 
+// ─── ON-CHAIN SCANNER (Alchemy RPC → Uniswap V2 getReserves) ────────────────
 async function scanOpportunities() {
-  if(!STATE.botRunning) return;
+  if (!STATE.botRunning) return;
   const minProfit = parseFloat(document.getElementById('min-profit').value) || 0.5;
-  document.getElementById('scan-net').textContent = NET_REGISTRY[STATE.currentChainId].shortName;
+  const net = NET_REGISTRY[STATE.currentChainId];
+  document.getElementById('scan-net').textContent = net.shortName;
 
+  // Use real on-chain scan when Alchemy key is available and on Ethereum mainnet
+  if (STATE.alchemyKey && !net.isTestnet && STATE.currentChainId === '1') {
+    await scanOnChain(minProfit);
+  } else {
+    // Simulated backend scan for testnets or when no key
+    await scanBackend(minProfit);
+  }
+}
+
+// Real DEX pool data via Alchemy eth_call on Uniswap V2/SushiSwap pair contracts
+async function scanOnChain(minProfit) {
+  const rpcUrl = `https://eth-mainnet.g.alchemy.com/v2/${STATE.alchemyKey}`;
+  const nativePrice = PRICE_MAP.ETH;
+  const GR = '0x0902f1ac'; // getReserves() selector
+
+  // Mainnet pair addresses: [dexA_pair, dexB_pair, tokenA, tokenB, decimals_token0, decimals_token1]
+  const PAIRS = [
+    { dexA:'Uniswap V2', dexB:'SushiSwap',  tA:'WETH', tB:'USDC',
+      pA:'0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc', pB:'0x397FF1542f962076d0BFE58eA045FfA2d347ACa0',
+      dec0:6, dec1:18, inverted:true }, // r0=USDC(6), r1=WETH(18) → price=r0/r1*1e12
+    { dexA:'Uniswap V2', dexB:'SushiSwap',  tA:'WETH', tB:'DAI',
+      pA:'0xA478c2975Ab1Ea89e8196811F51A7B7Ade33eB11', pB:'0xC3D03e4F041Fd4cD388c549Ee2A29a9E5075882f',
+      dec0:18, dec1:18, inverted:false }, // r0=WETH(18), r1=DAI(18) → price=r1/r0
+    { dexA:'Uniswap V2', dexB:'SushiSwap',  tA:'WBTC', tB:'WETH',
+      pA:'0xBb2b8038a1640196FbE3e38816F3e67Cba72D940', pB:'0xCEfF51756c56CeFFCA006cD410B03FFC46dd3a58',
+      dec0:8,  dec1:18, inverted:false }, // r0=WBTC(8), r1=WETH(18) → price=r1/r0*1e-10
+    { dexA:'Uniswap V2', dexB:'Balancer',   tA:'LINK', tB:'WETH',
+      pA:'0xa2107FA5B38d9bbd2C461D6EDf11B11A50F6b974', pB:'0x01F2D95727f57fF4baDff78C7e85BFba9B0cd4A6',
+      dec0:18, dec1:18, inverted:false },
+  ];
+
+  const opps = [];
+
+  // Batch eth_call requests
+  const batch = [];
+  PAIRS.forEach((p, i) => {
+    batch.push({ jsonrpc:'2.0', method:'eth_call', params:[{to:p.pA, data:GR},'latest'], id: i*2 });
+    batch.push({ jsonrpc:'2.0', method:'eth_call', params:[{to:p.pB, data:GR},'latest'], id: i*2+1 });
+  });
+
+  let results = [];
+  try {
+    const r = await fetch(rpcUrl, { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(batch) });
+    results = await r.json();
+  } catch (e) {
+    log('terminal','error','[on-chain] RPC batch call failed: '+e.message);
+    await scanBackend(minProfit); return;
+  }
+
+  // Map results by id
+  const byId = {};
+  (Array.isArray(results) ? results : []).forEach(r => { byId[r.id] = r; });
+
+  const decodeReserves = hex => {
+    if (!hex || hex === '0x' || hex.length < 130) return null;
+    const h = hex.slice(2);
+    const r0 = BigInt('0x' + h.slice(0, 64));
+    const r1 = BigInt('0x' + h.slice(64, 128));
+    return { r0, r1 };
+  };
+
+  for (let i = 0; i < PAIRS.length; i++) {
+    const p = PAIRS[i];
+    const resA = byId[i*2];
+    const resB = byId[i*2+1];
+    if (!resA?.result || !resB?.result) continue;
+    const rA = decodeReserves(resA.result);
+    const rB = decodeReserves(resB.result);
+    if (!rA || !rB || rA.r0 === 0n || rB.r0 === 0n) continue;
+
+    let priceA, priceB;
+    try {
+      if (p.tB === 'USDC') {
+        // r0=USDC(6dec), r1=WETH(18dec) → USD/ETH = r0/r1 * 1e12
+        priceA = Number(rA.r0) / Number(rA.r1) * 1e12;
+        priceB = Number(rB.r0) / Number(rB.r1) * 1e12;
+      } else if (p.tB === 'DAI') {
+        // r0=WETH(18), r1=DAI(18) → USD/ETH = r1/r0
+        priceA = Number(rA.r1) / Number(rA.r0);
+        priceB = Number(rB.r1) / Number(rB.r0);
+      } else if (p.tA === 'WBTC') {
+        // r0=WBTC(8), r1=WETH(18) → price in USD = (r1/r0)*1e-10 * ETH_USD
+        priceA = (Number(rA.r1) / Number(rA.r0) / 1e10) * nativePrice;
+        priceB = (Number(rB.r1) / Number(rB.r0) / 1e10) * nativePrice;
+      } else {
+        // Generic ratio
+        priceA = Number(rA.r1) / Number(rA.r0);
+        priceB = Number(rB.r1) / Number(rB.r0);
+      }
+    } catch (e) { continue; }
+
+    if (!priceA || !priceB || isNaN(priceA) || isNaN(priceB) || priceA <= 0 || priceB <= 0) continue;
+
+    const spread = Math.abs(priceA - priceB) / Math.min(priceA, priceB) * 100;
+    if (spread < minProfit) continue;
+
+    const buyDex  = priceA <= priceB ? p.dexA : p.dexB;
+    const sellDex = priceA <= priceB ? p.dexB : p.dexA;
+    const buyPrice  = Math.min(priceA, priceB);
+    const sellPrice = Math.max(priceA, priceB);
+
+    const loanSize = 50000 + Math.random() * 80000;
+    const flashFee = loanSize * 0.0005;
+    const gasEth   = STATE.gasGwei * 380000 * 1e-9;
+    const gasUSD   = gasEth * nativePrice;
+    const grossP   = loanSize * spread / 100;
+    const netP     = grossP - flashFee - gasUSD;
+
+    opps.push({
+      tokenA: p.tA, tokenB: p.tB, buyDex, sellDex,
+      profit: +spread.toFixed(4), netProfitUSD: +netP.toFixed(2),
+      loanSize: +loanSize.toFixed(0), loanProvider: 'Aave V3',
+      gasETH: +gasEth.toFixed(5), gasUSD: +gasUSD.toFixed(2),
+      confidence: Math.min(95, Math.round(65 + spread * 8)),
+      expiresIn: Math.floor(8 + Math.random() * 18),
+      buyPrice: +buyPrice.toFixed(4), sellPrice: +sellPrice.toFixed(4),
+      onChain: true,
+    });
+  }
+
+  opps.sort((a, b) => b.netProfitUSD - a.netProfitUSD);
+  STATE.opportunities = opps;
+  const cnt = opps.length;
+  const scanCnt = document.getElementById('scan-cnt');
+  if (scanCnt) scanCnt.textContent = cnt;
+  const scanGas = document.getElementById('scan-gas');
+  if (scanGas) scanGas.textContent = typeof STATE.gasGwei === 'number' ? STATE.gasGwei.toFixed(1) : STATE.gasGwei;
+
+  const badge = document.getElementById('opp-tab-badge');
+  if (cnt > 0) {
+    if (badge) { badge.textContent = cnt; badge.style.display = 'inline-flex'; }
+    const best = opps[0];
+    log('terminal','success',`[on-chain] ⛓ ${cnt} real arb found! Best: ${best.tokenA}/${best.tokenB} spread +${best.profit.toFixed(3)}% net $${best.netProfitUSD.toFixed(0)}`);
+    if (STATE.autoMode && STATE.wallet.connected && best.netProfitUSD > 50) {
+      log('terminal','warn',`[auto] 🤖 Auto-executing: ${best.tokenA}→${best.tokenB} on ${best.buyDex}↔${best.sellDex}`);
+      autoExecuteTrade(best);
+    }
+  } else {
+    if (badge) badge.style.display = 'none';
+    log('terminal','dim',`[on-chain] No spread ≥${minProfit}% in this scan — markets tightly balanced`);
+  }
+  if (activeTab === 1) renderOpps();
+  updateStatCards();
+}
+
+// Simulated backend scan (testnets or when no Alchemy key)
+async function scanBackend(minProfit) {
   try {
     const r = await fetch(`${API}/api/arbitrage/scan?chainId=${STATE.currentChainId}&minProfit=${minProfit}`);
     const d = await r.json();
-    STATE.opportunities = d.opportunities || [];
-
-    const cnt = STATE.opportunities.length;
-    document.getElementById('scan-cnt').textContent = cnt;
-    document.getElementById('scan-gas').textContent = STATE.gasGwei;
-
-    if(cnt > 0) {
-      const badge = document.getElementById('opp-tab-badge');
-      badge.textContent = cnt;
-      badge.style.display = 'inline-flex';
-      const best = STATE.opportunities[0];
-      log('terminal','success',`[scan] Found ${cnt} opportunities! Best: ${best.tokenA}/${best.tokenB} +${best.profit.toFixed(3)}% (~$${best.netProfitUSD.toFixed(0)} net)`);
-
-      if(STATE.autoMode && STATE.wallet.connected && best.netProfitUSD > 50) {
-        log('terminal','warn',`[auto] 🤖 Auto-executing: ${best.tokenA}→${best.tokenB} on ${best.buyDex}↔${best.sellDex}`);
-        autoExecuteTrade(best);
-      }
+    const opps = (d.opportunities || []).map(o => ({
+      ...o,
+      gasUSD: +((o.gasETH || 0) * getNativePrice()).toFixed(2),
+      onChain: false,
+    }));
+    STATE.opportunities = opps;
+    const cnt = opps.length;
+    const scanCnt = document.getElementById('scan-cnt');
+    if (scanCnt) scanCnt.textContent = cnt;
+    const scanGas = document.getElementById('scan-gas');
+    if (scanGas) scanGas.textContent = STATE.gasGwei;
+    const badge = document.getElementById('opp-tab-badge');
+    if (cnt > 0) {
+      if (badge) { badge.textContent = cnt; badge.style.display = 'inline-flex'; }
+      const best = opps[0];
+      log('terminal','success',`[scan] ${cnt} opportunities! Best: ${best.tokenA}/${best.tokenB} +${best.profit.toFixed(3)}% (~$${best.netProfitUSD.toFixed(0)} net)`);
+      if (STATE.autoMode && STATE.wallet.connected && best.netProfitUSD > 50) autoExecuteTrade(best);
+    } else {
+      if (badge) badge.style.display = 'none';
     }
-
-    if(activeTab === 1) renderOpps();
+    if (activeTab === 1) renderOpps();
     updateStatCards();
-  } catch(e) {
-    log('terminal','error','[scan] Scan failed: '+e.message);
+  } catch (e) {
+    log('terminal','error','[scan] Backend scan failed: ' + e.message);
   }
 }
 
