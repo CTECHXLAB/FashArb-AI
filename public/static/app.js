@@ -1,6 +1,6 @@
 /* ============================================================
-   FlashArb AI v4.0 — ChainGPT-Powered DeFi Arbitrage Platform
-   Multi-DEX Routing · Flash Loan Execution · AI Contract Gen
+   FlashArb AI v4.1 — WEB3 AI DEFI ARBITRAGE ENGINE
+   Multi-DEX Routing · Flash Loan Execution · On-Chain Scan
    ============================================================ */
 'use strict';
 
@@ -1885,129 +1885,57 @@ function getDefaultContract() {
   return `// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-// FlashArb AI v4.0 — ChainGPT-Powered Flash Arbitrage Bot
-// Supports: Aave V3, Uniswap V2/V3, SushiSwap, Curve
-// Generate custom contracts via ChainGPT AI in Contract Studio
-
-import {FlashLoanSimpleReceiverBase} from "@aave/core-v3/contracts/flashloan/base/FlashLoanSimpleReceiverBase.sol";
-import {IPoolAddressesProvider} from "@aave/core-v3/contracts/interfaces/IPoolAddressesProvider.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-
-interface IUniswapV2Router02 {
-    function swapExactTokensForTokens(uint,uint,address[] calldata,address,uint) external returns(uint[] memory);
-    function getAmountsOut(uint,address[] calldata) external view returns(uint[] memory);
-}
-
-interface IUniswapV3Router {
-    struct ExactInputSingleParams {
-        address tokenIn; address tokenOut; uint24 fee;
-        address recipient; uint256 deadline;
-        uint256 amountIn; uint256 amountOutMinimum; uint160 sqrtPriceLimitX96;
-    }
-    function exactInputSingle(ExactInputSingleParams calldata) external payable returns (uint256);
-}
+import {PersonalArbitrageBot} from "./PersonalArbitrageBot.sol";
 
 /**
- * @title FlashArbitrageBot
- * @notice Production flash loan arbitrage — ChainGPT AI generated
- * @dev Multi-DEX: Uniswap V2/V3, SushiSwap, Curve
+ * @title ArbitrageBotFactory
+ * @notice Lets any connected wallet deploy their OWN instance of
+ *         PersonalArbitrageBot, which only they will ever control.
+ * @dev Trust & custody model:
+ *      - deployBot() must be signed by user in their wallet
+ *      - User who calls deployBot() becomes immutable owner
+ *      - Factory has NO owner privileges over deployed bots
+ *      - Funds only leave via withdraw/withdrawAll/withdrawETH (onlyOwner)
  */
-contract FlashArbitrageBot is FlashLoanSimpleReceiverBase, ReentrancyGuard {
-    using SafeERC20 for IERC20;
+contract ArbitrageBotFactory {
+    address public immutable addressProvider;
+    address public immutable uniV2Router;
+    address public immutable sushiRouter;
+    address public immutable uniV3Router;
 
-    address public immutable owner;
-    IUniswapV2Router02 public immutable uniV2Router;
-    IUniswapV2Router02 public immutable sushiRouter;
-    IUniswapV3Router  public immutable uniV3Router;
+    mapping(address => address[]) public botsByOwner;
+    address[] public allBots;
 
-    uint256 public totalProfit;
-    uint256 public tradeCount;
-    bool    public paused;
-
-    uint8 constant DEX_UNI_V2 = 1;
-    uint8 constant DEX_SUSHI  = 2;
-    uint8 constant DEX_UNI_V3 = 3;
-
-    event ArbitrageExecuted(address indexed token, uint256 loan, uint256 profit, uint8 buyDex, uint8 sellDex, uint256 ts);
-    event EmergencyWithdraw(address token, uint256 amount);
-
-    modifier onlyOwner()  { require(msg.sender == owner, "!owner"); _; }
-    modifier notPaused()  { require(!paused, "paused"); _; }
+    event BotDeployed(address indexed owner, address indexed bot, uint256 index);
 
     constructor(
-        address _provider,
-        address _uniV2,
-        address _sushi,
-        address _uniV3
-    ) FlashLoanSimpleReceiverBase(IPoolAddressesProvider(_provider)) {
-        owner = msg.sender;
-        uniV2Router = IUniswapV2Router02(_uniV2);
-        sushiRouter  = IUniswapV2Router02(_sushi);
-        uniV3Router  = IUniswapV3Router(_uniV3);
+        address _addressProvider,
+        address _uniV2Router,
+        address _sushiRouter,
+        address _uniV3Router
+    ) {
+        addressProvider = _addressProvider;
+        uniV2Router = _uniV2Router;
+        sushiRouter = _sushiRouter;
+        uniV3Router = _uniV3Router;
     }
 
-    /// @notice Trigger flash loan arbitrage
-    function executeArbitrage(
-        address token, uint256 amount, address mid,
-        uint8 buyDex, uint8 sellDex, uint24 v3Fee
-    ) external onlyOwner notPaused nonReentrant {
-        POOL.flashLoanSimple(address(this), token, amount, abi.encode(token, mid, buyDex, sellDex, v3Fee), 0);
+    function deployBot() external returns (address botAddress) {
+        PersonalArbitrageBot bot = new PersonalArbitrageBot(
+            addressProvider, uniV2Router, sushiRouter, uniV3Router, msg.sender
+        );
+        botAddress = address(bot);
+        botsByOwner[msg.sender].push(botAddress);
+        allBots.push(botAddress);
+        emit BotDeployed(msg.sender, botAddress, allBots.length - 1);
     }
 
-    /// @dev Aave callback — executes the arbitrage logic
-    function executeOperation(
-        address asset, uint256 amount, uint256 premium,
-        address, bytes calldata params
-    ) external override returns (bool) {
-        require(msg.sender == address(POOL), "!pool");
-        (address token, address mid, uint8 buyDex, uint8 sellDex, uint24 v3Fee) =
-            abi.decode(params, (address, address, uint8, uint8, uint24));
-
-        // Step 1: Buy mid token using borrowed asset
-        uint256 midAmt = _swap(buyDex, asset, mid, amount, 0, v3Fee);
-
-        // Step 2: Sell mid token back to asset on different DEX
-        uint256 outAmt = _swap(sellDex, mid, asset, midAmt, 0, v3Fee);
-
-        uint256 owed = amount + premium;
-        require(outAmt > owed, "No profit");
-
-        uint256 profit = outAmt - owed;
-        unchecked { totalProfit += profit; tradeCount++; }
-
-        IERC20(asset).approve(address(POOL), owed);
-        emit ArbitrageExecuted(asset, amount, profit, buyDex, sellDex, block.timestamp);
-        return true;
+    function getBotsForOwner(address user) external view returns (address[] memory) {
+        return botsByOwner[user];
     }
 
-    function _swap(uint8 dex, address tokenIn, address tokenOut, uint256 amtIn, uint256 minOut, uint24 fee)
-        internal returns (uint256)
-    {
-        address router = dex == DEX_SUSHI ? address(sushiRouter) : dex == DEX_UNI_V3 ? address(uniV3Router) : address(uniV2Router);
-        IERC20(tokenIn).approve(router, amtIn);
-        if (dex == DEX_UNI_V3) {
-            return uniV3Router.exactInputSingle(IUniswapV3Router.ExactInputSingleParams({
-                tokenIn:tokenIn, tokenOut:tokenOut, fee:fee,
-                recipient:address(this), deadline:block.timestamp+300,
-                amountIn:amtIn, amountOutMinimum:minOut, sqrtPriceLimitX96:0
-            }));
-        }
-        address[] memory path = new address[](2);
-        path[0] = tokenIn; path[1] = tokenOut;
-        IUniswapV2Router02 r = dex == DEX_SUSHI ? sushiRouter : uniV2Router;
-        uint[] memory amounts = r.swapExactTokensForTokens(amtIn, minOut, path, address(this), block.timestamp+300);
-        return amounts[amounts.length - 1];
+    function totalBotsDeployed() external view returns (uint256) {
+        return allBots.length;
     }
-
-    function emergencyWithdraw(address token) external onlyOwner {
-        uint256 bal = IERC20(token).balanceOf(address(this));
-        IERC20(token).safeTransfer(owner, bal);
-        emit EmergencyWithdraw(token, bal);
-    }
-
-    function setPaused(bool _p) external onlyOwner { paused = _p; }
-    receive() external payable {}
 }`;
 }
