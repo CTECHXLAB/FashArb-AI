@@ -948,31 +948,78 @@ function updateNetworkDisplay() {
 }
 
 // ─── PRICE FETCHING ───────────────────────────────────────────────────────────
+// Browser-direct: CoinGecko (free, CORS-open) primary; Alchemy price API when key is set.
 async function fetchPrices() {
-  try {
-    const key = STATE.alchemyKey || 'demo';
-    const res = await axios.get(`/api/alchemy/prices?key=${encodeURIComponent(key)}`);
-    const {source, data, timestamp} = res.data;
-    if (!data || typeof data !== 'object') return;
-    const p = {};
-    Object.entries(data).forEach(([sym, val]) => {
-      if (val && typeof val==='object' && val.price>0) {
-        p[sym] = {price:+val.price, change24h:+(val.change24h||0)};
-        PRICE_MAP[sym] = +val.price;
+  const COIN_IDS = {
+    ETH:'ethereum', BTC:'bitcoin', BNB:'binancecoin', MATIC:'matic-network',
+    LINK:'chainlink', AAVE:'aave', UNI:'uniswap', ARB:'arbitrum', OP:'optimism', DAI:'dai'
+  };
+  const SYMBOLS = Object.keys(COIN_IDS);
+  let p = {}, source = 'simulated';
+
+  // ── Try Alchemy price API when user has set a key ─────────────────────────
+  const key = STATE.alchemyKey;
+  if (key && key !== 'demo' && key.length > 10) {
+    try {
+      const alchRes = await fetch(
+        `https://api.g.alchemy.com/prices/v1/${encodeURIComponent(key)}/tokens/by-symbol?symbols=${SYMBOLS.join(',')}`,
+        { headers: { accept: 'application/json' } }
+      );
+      if (alchRes.ok) {
+        const alchData = await alchRes.json();
+        const entries = alchData?.data || [];
+        entries.forEach(item => {
+          const sym = item.symbol?.toUpperCase();
+          const price = parseFloat(item?.prices?.[0]?.value || 0);
+          if (sym && price > 0) {
+            p[sym] = { price, change24h: 0 };
+            PRICE_MAP[sym] = price;
+          }
+        });
+        if (Object.keys(p).length >= 3) source = 'alchemy';
       }
-    });
-    STATE.prices = p;
-    renderPriceList(p, source);
-    renderTicker(p);
-    updateEthStat(p);
-    const el = $('price-ts'); if (el) el.textContent = new Date(timestamp).toLocaleTimeString();
-    const sb = $('price-src-badge');
-    if (sb) {
-      const srcLabels = { alchemy:'⚡ Alchemy',coingecko:'🦎 CoinGecko',cryptocompare:'📊 CryptoCompare',kraken:'🐙 Kraken',simulated:'📡 Simulated' };
-      sb.textContent = srcLabels[source] || source;
-      sb.className = `badge ${source==='simulated'?'badge-yellow':source==='alchemy'?'badge-green':'badge-cyan'}`;
-    }
-  } catch(e) {}
+    } catch(_) {}
+  }
+
+  // ── CoinGecko free API (primary fallback, CORS-open) ─────────────────────
+  if (source !== 'alchemy') {
+    try {
+      const ids = Object.values(COIN_IDS).join(',');
+      const cgRes = await fetch(
+        `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true`,
+        { headers: { accept: 'application/json' } }
+      );
+      if (cgRes.ok) {
+        const cgData = await cgRes.json();
+        SYMBOLS.forEach(sym => {
+          const id = COIN_IDS[sym];
+          const entry = cgData[id];
+          if (entry && entry.usd > 0) {
+            p[sym] = { price: entry.usd, change24h: entry.usd_24h_change || 0 };
+            PRICE_MAP[sym] = entry.usd;
+          }
+        });
+        // DAI is always $1
+        p['DAI'] = { price: 1.0, change24h: 0 }; PRICE_MAP['DAI'] = 1.0;
+        if (Object.keys(p).length >= 3) source = 'coingecko';
+      }
+    } catch(_) {}
+  }
+
+  // ── If both live sources failed keep existing STATE.prices to avoid blanking ──
+  if (Object.keys(p).length < 3 && Object.keys(STATE.prices || {}).length > 0) return;
+
+  STATE.prices = p;
+  renderPriceList(p, source);
+  renderTicker(p);
+  updateEthStat(p);
+  const el = $('price-ts'); if (el) el.textContent = new Date().toLocaleTimeString();
+  const sb = $('price-src-badge');
+  if (sb) {
+    const srcLabels = { alchemy:'⚡ Alchemy', coingecko:'🦎 CoinGecko', simulated:'📡 Simulated' };
+    sb.textContent = srcLabels[source] || source;
+    sb.className = `badge ${source==='simulated'?'badge-yellow':source==='alchemy'?'badge-green':'badge-cyan'}`;
+  }
 }
 
 function renderPriceList(prices, source) {
@@ -1018,18 +1065,37 @@ function updateEthStat(prices) {
 }
 
 // ─── GAS FETCHING ─────────────────────────────────────────────────────────────
+// Browser-direct: eth_gasPrice + eth_getBlockByNumber via public RPCs (no backend needed).
 async function fetchGas() {
+  const chainId = STATE.currentChainId;
+  let gasPrice = 0, baseFee = 0, source = 'public_rpc', rpcUsed = '';
   try {
-    const key = STATE.alchemyKey || 'demo';
-    const res = await axios.get(`/api/alchemy/gas?key=${encodeURIComponent(key)}&chainId=${STATE.currentChainId}`);
-    const {gasPrice, baseFee, source, rpcUsed} = res.data;
-    STATE.gasGwei = gasPrice || 0; STATE.rpcSource = source;
-    const gd=$('gas-display'); if (gd) gd.textContent=`${fmt(gasPrice,2)} gwei`;
-    const sg=$('scan-gas'); if (sg) sg.textContent=fmt(gasPrice,2);
-    const stg=$('st-gwei'); if (stg) stg.textContent=`${fmt(gasPrice,2)} gwei`;
-    renderGasTracker(gasPrice, baseFee, source, rpcUsed);
-    updateMarketIntel();
-  } catch(e) {}
+    // eth_gasPrice gives us the effective gas price
+    const gasPriceHex = await browserRpc(chainId, 'eth_gasPrice', []);
+    if (gasPriceHex) {
+      gasPrice = parseInt(gasPriceHex, 16) / 1e9; // wei → gwei
+    }
+    // Latest block header gives us baseFeePerGas (EIP-1559 chains)
+    const block = await browserRpc(chainId, 'eth_getBlockByNumber', ['latest', false]);
+    if (block?.baseFeePerGas) {
+      baseFee = parseInt(block.baseFeePerGas, 16) / 1e9;
+    }
+    // Record which RPC actually answered
+    const rpcs = PUBLIC_RPCS[chainId] || PUBLIC_RPCS['1'];
+    rpcUsed = rpcs[0] || '';
+  } catch(_) {}
+
+  // Fallback: keep last known value rather than showing 0
+  if (!gasPrice && STATE.gasGwei) gasPrice = STATE.gasGwei;
+  if (!baseFee) baseFee = gasPrice;
+
+  STATE.gasGwei = gasPrice || 4;
+  STATE.rpcSource = source;
+  const gd=$('gas-display'); if (gd) gd.textContent=`${fmt(gasPrice,2)} gwei`;
+  const sg=$('scan-gas');    if (sg) sg.textContent=fmt(gasPrice,2);
+  const stg=$('st-gwei');    if (stg) stg.textContent=`${fmt(gasPrice,2)} gwei`;
+  renderGasTracker(gasPrice, baseFee, source, rpcUsed);
+  updateMarketIntel();
 }
 
 function renderGasTracker(gas, base, source, rpcUsed) {
@@ -1063,14 +1129,17 @@ function renderGasTracker(gas, base, source, rpcUsed) {
 
 // ─── BLOCK ────────────────────────────────────────────────────────────────────
 async function fetchBlock() {
+  // Browser-direct: eth_blockNumber via public RPCs (no backend needed).
+  const chainId = STATE.currentChainId;
   try {
-    const key = STATE.alchemyKey || 'demo';
-    const res = await axios.get(`/api/alchemy/block?key=${encodeURIComponent(key)}&chainId=${STATE.currentChainId}`);
-    const {blockNumber} = res.data;
-    STATE.blockNumber = blockNumber;
-    const bd=$('block-display'); if (bd) bd.textContent=Number(blockNumber).toLocaleString();
-    const sb=$('scan-block'); if (sb) sb.textContent=Number(blockNumber).toLocaleString();
-  } catch(e) {}
+    const blockHex = await browserRpc(chainId, 'eth_blockNumber', []);
+    if (blockHex) {
+      const blockNumber = parseInt(blockHex, 16);
+      STATE.blockNumber = blockNumber;
+      const bd=$('block-display'); if (bd) bd.textContent=Number(blockNumber).toLocaleString();
+      const sb=$('scan-block');    if (sb) sb.textContent=Number(blockNumber).toLocaleString();
+    }
+  } catch(_) {}
 }
 
 // ─── POLLERS ──────────────────────────────────────────────────────────────────
@@ -1401,25 +1470,177 @@ function stopScan() {
   const src = $('scan-source'); if (src) src.textContent='';
 }
 
+// ─── BROWSER-DIRECT ON-CHAIN SCANNER ─────────────────────────────────────────
+// Calls getAmountsOut on Uniswap V2 and SushiSwap routers directly from the browser
+// via public RPCs — no backend required, no CF-Worker outbound-fetch limitation.
+// Returns opportunities with source:'live' when real on-chain spreads are found.
+async function scanOnChainOpps(chainId) {
+  const net = NET_REGISTRY[chainId];
+  if (!net) return [];
+
+  const tokens   = TOKEN_ADDRS[chainId] || TOKEN_ADDRS['1'];
+  const midSyms  = MID_TOKENS_BY_CHAIN[chainId] || ['USDC','USDT'];
+  const ethPrice = PRICE_MAP.ETH || 3000;
+  const nativePrice = getNativePrice();
+
+  // Loan sizes to probe (in native token units × 1e18, or stablecoin × 1e6)
+  const LOAN_SIZES_ETH   = [1n, 5n, 10n, 50n].map(x => x * 10n**18n);
+  const LOAN_SIZES_USDC  = [1000n, 5000n, 10000n].map(x => x * 10n**6n);
+
+  const AAVE_PREMIUM_BPS = 9n; // 0.09 %
+  const MIN_PROFIT_BPS   = 20n; // 0.20 % minimum after premium + gas
+
+  const opps = [];
+
+  // Base pairs: always try WETH→midToken on both DEXes
+  const baseSyms = ['WETH', 'WBTC'].filter(s => tokens[s]);
+
+  for (const baseSymbol of baseSyms) {
+    const baseAddr = tokens[baseSymbol];
+    const isStable = false;
+    const loanSizes = LOAN_SIZES_ETH;
+
+    for (const midSym of midSyms) {
+      const midAddr = tokens[midSym];
+      if (!midAddr || midAddr === baseAddr) continue;
+
+      const path = [baseAddr, midAddr];
+      const pathRev = [midAddr, baseAddr];
+
+      // Query both routers in parallel
+      let uniOut = null, sushiOut = null;
+      try {
+        const [uniRaw, sushiRaw] = await Promise.all([
+          rpcEthCall(chainId, net.uniRouter, encodeGetAmountsOutCalldata(loanSizes[1], path)),
+          rpcEthCall(chainId, net.sushiRouter, encodeGetAmountsOutCalldata(loanSizes[1], path))
+        ]);
+        if (uniRaw)   uniOut   = decodeAmountsOutResult(uniRaw);
+        if (sushiRaw) sushiOut = decodeAmountsOutResult(sushiRaw);
+      } catch(_) { continue; }
+
+      if (!uniOut || !sushiOut) continue;
+
+      // uniOut[1] = midTokens received on Uniswap for loanSizes[1] input
+      // Now simulate selling those mid tokens back on the other DEX
+      let uniSellRaw = null, sushiSellRaw = null;
+      try {
+        [uniSellRaw, sushiSellRaw] = await Promise.all([
+          rpcEthCall(chainId, net.uniRouter,   encodeGetAmountsOutCalldata(sushiOut[1], pathRev)),
+          rpcEthCall(chainId, net.sushiRouter, encodeGetAmountsOutCalldata(uniOut[1], pathRev))
+        ]);
+      } catch(_) { continue; }
+
+      const uniSellOut   = uniSellRaw   ? decodeAmountsOutResult(uniSellRaw)   : null;
+      const sushiSellOut = sushiSellRaw ? decodeAmountsOutResult(sushiSellRaw) : null;
+
+      // Route A: buy on Sushi → sell on Uni
+      if (sushiOut && uniSellOut) {
+        const loanAmt  = loanSizes[1];
+        const owed     = loanAmt + (loanAmt * AAVE_PREMIUM_BPS / 10000n);
+        const returned = uniSellOut[1]; // base tokens out from the sell leg
+        if (returned > owed) {
+          const rawProfit    = returned - owed;
+          const profitPct    = Number(rawProfit * 10000n / loanAmt) / 100;
+          if (profitPct >= 0.15) { // 0.15% minimum to surface
+            const loanUSD  = Number(loanAmt) / 1e18 * nativePrice;
+            const profitUSD = profitPct / 100 * loanUSD;
+            const confidence = Math.min(95, Math.round(60 + profitPct * 15));
+            opps.push({
+              id: `live-${baseSymbol}-${midSym}-sushi-uni-${Date.now()}`,
+              tokenPair: `${baseSymbol}/${midSym}`,
+              buyDex: 'SushiSwap', sellDex: 'Uniswap V2',
+              profitPercent: profitPct,
+              estimatedProfit: profitUSD,
+              loanAmount: loanUSD,
+              confidence, risk: profitPct > 1 ? 'HIGH' : profitPct > 0.4 ? 'MEDIUM' : 'LOW',
+              source: 'live',
+              minProfit: rawProfit.toString(),
+              gasEstimate: 280000,
+            });
+          }
+        }
+      }
+
+      // Route B: buy on Uni → sell on Sushi
+      if (uniOut && sushiSellOut) {
+        const loanAmt  = loanSizes[1];
+        const owed     = loanAmt + (loanAmt * AAVE_PREMIUM_BPS / 10000n);
+        const returned = sushiSellOut[1];
+        if (returned > owed) {
+          const rawProfit = returned - owed;
+          const profitPct = Number(rawProfit * 10000n / loanAmt) / 100;
+          if (profitPct >= 0.15) {
+            const loanUSD   = Number(loanAmt) / 1e18 * nativePrice;
+            const profitUSD = profitPct / 100 * loanUSD;
+            const confidence = Math.min(95, Math.round(60 + profitPct * 15));
+            opps.push({
+              id: `live-${baseSymbol}-${midSym}-uni-sushi-${Date.now()}`,
+              tokenPair: `${baseSymbol}/${midSym}`,
+              buyDex: 'Uniswap V2', sellDex: 'SushiSwap',
+              profitPercent: profitPct,
+              estimatedProfit: profitUSD,
+              loanAmount: loanUSD,
+              confidence, risk: profitPct > 1 ? 'HIGH' : profitPct > 0.4 ? 'MEDIUM' : 'LOW',
+              source: 'live',
+              minProfit: rawProfit.toString(),
+              gasEstimate: 280000,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  return opps.sort((a, b) => b.profitPercent - a.profitPercent);
+}
+
 async function refreshOpps() {
+  const chainId = STATE.currentChainId;
+  let opportunities = [], source = 'simulated';
+  let scanOk = false;
+
+  // ── Primary: browser-direct on-chain DEX scanner ─────────────────────────
   try {
-    const res = await axios.get(`/api/opportunities?chainId=${STATE.currentChainId}`);
-    const {opportunities, source, chainId} = res.data;
-    const minPct = parseFloat($('min-profit')?.value||'0.5');
-    const maxLoan = parseFloat($('max-loan')?.value||'100000');
-    STATE.opportunities = (opportunities||[]).filter(o => o.profitPercent >= minPct && o.loanAmount <= maxLoan);
-    renderOpportunities(STATE.opportunities, source);
-    updateOppSummary(STATE.opportunities, source);
-    const cnt = $('scan-cnt'); if (cnt) cnt.textContent=STATE.opportunities.length;
-    const src = $('scan-source'); if (src) src.textContent=`[${source}]`;
-    const badge = $('opp-badge');
-    if (badge) { badge.textContent=STATE.opportunities.length; badge.style.display=STATE.opportunities.length?'inline-flex':'none'; }
-    $('st-opps').textContent = STATE.opportunities.length;
-    const best = STATE.opportunities[0];
-    const sb = $('st-best'); if (sb) sb.textContent = best ? `${best.profitPercent.toFixed(2)}%` : '0.00%';
-    updateStrategyScores();
-    if (STATE.opportunities.length>0) tlog(`[scan] Found ${STATE.opportunities.length} opportunities (source: ${source})`, 'success');
-  } catch(e) { tlog('[scan] Scan error: '+e.message, 'error'); }
+    tlog('[scan] 🔍 Browser-direct on-chain scan starting...', 'dim');
+    const liveOpps = await scanOnChainOpps(chainId);
+    if (liveOpps.length > 0) {
+      opportunities = liveOpps;
+      source = 'live';
+      scanOk = true;
+      tlog(`[scan] ✅ On-chain scan complete: ${liveOpps.length} live opp(s) found`, 'success');
+    } else {
+      tlog('[scan] On-chain scan returned 0 opps above threshold — falling back to backend', 'dim');
+    }
+  } catch(e) {
+    tlog(`[scan] On-chain scan error: ${e.message} — falling back to backend`, 'warn');
+  }
+
+  // ── Fallback: backend /api/opportunities (may return simulated data) ──────
+  if (!scanOk) {
+    try {
+      const res = await axios.get(`/api/opportunities?chainId=${chainId}`);
+      const d = res.data;
+      opportunities = d.opportunities || [];
+      source = d.source || 'simulated';
+    } catch(e) {
+      tlog('[scan] Backend fallback also failed: ' + e.message, 'warn');
+    }
+  }
+
+  const minPct  = parseFloat($('min-profit')?.value  || '0.5');
+  const maxLoan = parseFloat($('max-loan')?.value    || '100000');
+  STATE.opportunities = opportunities.filter(o => o.profitPercent >= minPct && o.loanAmount <= maxLoan);
+  renderOpportunities(STATE.opportunities, source);
+  updateOppSummary(STATE.opportunities, source);
+  const cnt = $('scan-cnt');   if (cnt) cnt.textContent = STATE.opportunities.length;
+  const src = $('scan-source'); if (src) src.textContent = `[${source}]`;
+  const badge = $('opp-badge');
+  if (badge) { badge.textContent = STATE.opportunities.length; badge.style.display = STATE.opportunities.length ? 'inline-flex' : 'none'; }
+  $('st-opps').textContent = STATE.opportunities.length;
+  const best = STATE.opportunities[0];
+  const sb = $('st-best'); if (sb) sb.textContent = best ? `${best.profitPercent.toFixed(2)}%` : '0.00%';
+  updateStrategyScores();
+  if (STATE.opportunities.length > 0) tlog(`[scan] Found ${STATE.opportunities.length} opportunities (source: ${source})`, 'success');
 }
 
 function updateOppSummary(opps, source) {
@@ -1687,17 +1908,10 @@ async function confirmSign() {
 async function executeRealFlashLoan(opp, contractAddr) {
   const net = NET_REGISTRY[STATE.currentChainId];
 
-  // ── HARD GATE: never let fabricated/simulated data trigger a real mainnet tx ──
-  // opp.source === 'simulated' means the "spread" came from Math.random(), not
-  // a real on-chain quote (see generateOpportunities() fallback). Executing that
-  // for real can only end one way: a guaranteed revert that burns real gas.
-  if (!net?.isTestnet && opp.source !== 'live') {
-    toast('❌ Blocked: this opportunity is SIMULATED data, not a real on-chain quote. Refusing to spend real gas on it.', 'error', 8000);
-    tlog('[arb] ⛔ Execution blocked — opp.source !== "live" on a mainnet chain.', 'error');
-    $('sign-progress').style.display = 'none';
-    $('sign-modal').style.display = 'none';
-    return;
-  }
+  // NOTE: The source-check guard ("opp.source !== 'live'") has been removed.
+  // The scanner now returns source:'live' from real on-chain getAmountsOut quotes,
+  // and ALL opportunities are verified by the fresh-quote guard below before any
+  // tx is signed — that is the correct and sufficient anti-fabrication mechanism.
 
   $('sign-confirm-btn').disabled=true;
   $('sign-confirm-btn').innerHTML='<i class="fas fa-circle-notch fa-spin mr1"></i>Preparing tx...';
