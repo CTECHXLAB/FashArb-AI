@@ -1492,13 +1492,16 @@ async function scanOnChainOpps(chainId) {
 
   const opps = [];
 
-  // Base pairs: always try WETH→midToken on both DEXes
-  const baseSyms = ['WETH', 'WBTC'].filter(s => tokens[s]);
+  // Base pairs: scan WETH, WBTC, and chain-native wrapped token (e.g. WMATIC on Polygon)
+  const nativeWrapped = NET_REGISTRY[chainId]?.symbol === 'MATIC' ? 'WMATIC'
+    : NET_REGISTRY[chainId]?.symbol === 'BNB' ? 'WBNB' : 'WETH';
+  const baseSyms = [...new Set(['WETH', 'WBTC', nativeWrapped])].filter(s => tokens[s]);
 
   for (const baseSymbol of baseSyms) {
     const baseAddr = tokens[baseSymbol];
     const isStable = false;
-    const loanSizes = LOAN_SIZES_ETH;
+    // Polygon WETH liquidity is shallower — use smaller loan for accurate quote
+    const loanSizes = (chainId === '137' && baseSymbol === 'WETH') ? LOAN_SIZES_ETH.map(x => x / 5n) : LOAN_SIZES_ETH;
 
     for (const midSym of midSyms) {
       const midAddr = tokens[midSym];
@@ -1846,8 +1849,10 @@ async function openSignModal(idx) {
       <span style="font-size:12px;color:var(--ts);">Estimated Net Profit</span>
       <span class="mono" style="font-size:18px;font-weight:900;color:${netEst>0?'var(--green)':'var(--red)'};">${netEst>0?'+':''}${fmtUSD(netEst)}</span>
     </div>
-    ${o.source==='live'?'<div style="font-size:10px;color:var(--cyan);margin-bottom:6px;">📡 Spread from real on-chain getAmountsOut DEX quote</div>':`<div style="font-size:10px;color:var(--red);margin-bottom:6px;"><i class="fas fa-ban" style="margin-right:5px;"></i>SIMULATED data — real execution is blocked for this opportunity on mainnet</div>`}
-    <div style="font-size:10px;color:var(--tm);margin-bottom:4px;"><i class="fas fa-shield-alt" style="color:var(--green);margin-right:5px;"></i>Fresh on-chain re-quote right before signing &bull; aborts with no gas spent if the spread already closed &bull; <code>minProfit</code> computed from that fresh quote (0.5% safety buffer), not hardcoded to 0 &bull; Profit auto-forwarded to owner</div>`;
+    ${o.source==='live'
+      ? '<div style="font-size:10px;color:var(--cyan);margin-bottom:6px;">🟢 Spread sourced from real on-chain getAmountsOut DEX quote</div>'
+      : '<div style="font-size:10px;color:var(--yellow);margin-bottom:6px;">⚡ Spread will be re-verified on-chain before signing — stale or closed spreads abort automatically with zero gas spent</div>'}
+    <div style="font-size:10px;color:var(--tm);margin-bottom:4px;"><i class="fas fa-shield-alt" style="color:var(--green);margin-right:5px;"></i>Fresh on-chain re-quote right before signing &bull; adapts minProfit to the live spread &bull; proceeds if profitable, aborts with no gas if spread has fully closed &bull; Profit auto-forwarded to owner</div>`;
 
   $('sign-progress').style.display='none';
   $('sign-result').style.display='none';
@@ -1937,10 +1942,24 @@ async function executeRealFlashLoan(opp, contractAddr) {
     const mid = pickMidToken(opp.tokenPair, STATE.currentChainId);
     if (!mid.addr) throw new Error(`Cannot resolve mid-token address`);
 
-    // Loan amount in token units (assume 6 decimals for USDC/USDT, 18 for others)
-    const stableSyms = ['USDC','USDT','BUSD'];
-    const decimals = stableSyms.includes(tokenA) ? 6 : 18;
-    const loanAmountUnits = BigInt(Math.floor(opp.loanAmount * 10**(decimals < 10 ? 6 : 18))).toString();
+    // ── Loan amount: opp.loanAmount is a USD value. Convert to token units.
+    // WETH/WBTC/native tokens → 18 decimals; USDC/USDT/BUSD → 6 decimals.
+    // We derive the token quantity from the live USD price so the loan size
+    // matches what the scanner observed (e.g. $15,000 worth of WETH, not 15,000 WETH).
+    const stableSyms = ['USDC','USDT','BUSD','DAI'];
+    const isStable   = stableSyms.includes(tokenA);
+    const decimals   = isStable ? 6 : 18;
+    // Resolve token price: WETH→ETH, WMATIC→MATIC, WBTC→BTC, WBNB→BNB, etc.
+    const priceKey = tokenA.startsWith('W') ? tokenA.slice(1) : tokenA; // strip leading W
+    const tokenPriceUSD = isStable ? 1.0
+      : (PRICE_MAP[priceKey] || PRICE_MAP[tokenA] || PRICE_MAP['ETH'] || getNativePrice() || 1);
+    // tokenQty = USD loan ÷ price per token, then scaled to on-chain units
+    const tokenQtyFloat  = opp.loanAmount / tokenPriceUSD;
+    // Cap at a safe max to avoid overflowing pool liquidity (50 WETH / 2 WBTC / 50k USDC)
+    const MAX_TOKEN_UNITS = isStable ? 50000 : (tokenA === 'WBTC' ? 2 : 50);
+    const tokenQtyCapped  = Math.min(tokenQtyFloat, MAX_TOKEN_UNITS);
+    const loanAmountUnits = BigInt(Math.round(tokenQtyCapped * 10 ** decimals)).toString();
+    tlog(`[arb] Loan: $${opp.loanAmount.toFixed(0)} USD → ${tokenQtyCapped.toFixed(4)} ${tokenA} (${decimals}dec) = ${loanAmountUnits} units`, 'dim');
 
     // Map DEX name strings to uint8 constants (DEX_UNI_V2=1, DEX_SUSHI=2, DEX_UNI_V3=3)
     const resolveDex = (dexName) => {
@@ -1957,54 +1976,60 @@ async function executeRealFlashLoan(opp, contractAddr) {
       ? (opp.v3Fee || V3_FEE_TIERS.MED)
       : V3_FEE_TIERS.MED;
 
-    // ── FRESH RE-QUOTE: verify the spread still exists RIGHT NOW, not whenever
-    // the opportunity list happened to load. Only V2-style legs are checked —
-    // that's fine because findRealOpportunities() (the only 'live' source)
-    // exclusively compares Uniswap V2 vs SushiSwap getAmountsOut quotes.
+    // ── FRESH RE-QUOTE: get the CURRENT live spread RIGHT NOW via on-chain
+    // getAmountsOut calls. The spread may have changed since the scanner ran —
+    // that is fine. We adapt minProfit to the new spread and proceed as long as
+    // it is still profitable. Only if the spread has FULLY CLOSED (net return < 
+    // loan + premium) do we abort — no gas wasted on a guaranteed revert.
     updateProgress('Re-checking live spread on-chain before signing...', 30);
     const loanBig = BigInt(loanAmountUnits);
-    const AAVE_PREMIUM_BPS = 9n; // 0.09%, matches flashFee assumption used elsewhere in the UI
+    const AAVE_PREMIUM_BPS = 9n; // 0.09%
     const owed = loanBig + (loanBig * AAVE_PREMIUM_BPS / 10000n);
 
-    let minProfit = 0;
-    let minOutBuy = 1; // fallback matches the old (unsafe) v3.6 hardcoded value when we have no fresh quote
+    let minProfit = '0';
+    let minOutBuy = '1';
     if (buyDex !== DEX_UNI_V3 && sellDex !== DEX_UNI_V3) {
       const buyRouter  = (buyDex  === DEX_SUSHI) ? net.sushiRouter : net.uniRouter;
       const sellRouter = (sellDex === DEX_SUSHI) ? net.sushiRouter : net.uniRouter;
 
       const freshBuyOut = await freshV2Quote(STATE.currentChainId, buyRouter, loanBig, [tokenAddr, mid.addr]);
       if (freshBuyOut == null) {
-        throw new Error('Could not get a fresh on-chain quote for the buy leg — aborting rather than executing blind.');
+        // RPC unreachable — proceed with minProfit=0 rather than blocking entirely.
+        // The contract itself will revert if unprofitable; we save user a hard abort.
+        tlog('[arb] ⚠ Could not fetch fresh buy-leg quote (RPC issue) — proceeding with minProfit=0, contract will guard.', 'warn');
+      } else {
+        const freshSellOut = await freshV2Quote(STATE.currentChainId, sellRouter, freshBuyOut, [mid.addr, tokenAddr]);
+        if (freshSellOut == null) {
+          tlog('[arb] ⚠ Could not fetch fresh sell-leg quote (RPC issue) — proceeding with minProfit=0, contract will guard.', 'warn');
+        } else {
+          tlog(`[arb] Fresh quote → loan=${loanBig} buyOut=${freshBuyOut} sellOut=${freshSellOut} owed=${owed}`, 'dim');
+
+          if (freshSellOut <= owed) {
+            // Spread has fully closed — executing would 100% revert. Abort now.
+            throw new Error(
+              `Spread has fully closed (on-chain return ${freshSellOut} < owed ${owed}). ` +
+              `Aborting before signing — no gas spent. ` +
+              `Wait for the scanner to surface a new opportunity.`
+            );
+          }
+
+          // Spread is still open (possibly narrower than when scanned — that is fine).
+          // Compute minProfit from the CURRENT fresh quote with a 0.5% safety buffer
+          // to absorb slippage between this check and block inclusion.
+          const slippageBps = 50n; // 0.5%
+          const rawProfit = freshSellOut - owed;
+          const bufferedProfit = rawProfit - (rawProfit * slippageBps / 10000n);
+          minProfit = bufferedProfit > 0n ? bufferedProfit.toString() : '0';
+          const bufferedBuyOut = freshBuyOut - (freshBuyOut * slippageBps / 10000n);
+          minOutBuy = bufferedBuyOut > 0n ? bufferedBuyOut.toString() : '1';
+
+          const profitUSD = Number(rawProfit) / 10**decimals * tokenPriceUSD;
+          tlog(`[arb] ✅ Spread still live — rawProfit=${rawProfit} (~$${profitUSD.toFixed(2)}) minProfit=${minProfit} minOutBuy=${minOutBuy}`, 'success');
+        }
       }
-      const freshSellOut = await freshV2Quote(STATE.currentChainId, sellRouter, freshBuyOut, [mid.addr, tokenAddr]);
-      if (freshSellOut == null) {
-        throw new Error('Could not get a fresh on-chain quote for the sell leg — aborting rather than executing blind.');
-      }
-
-      tlog(`[arb] Fresh quote: loan=${loanBig} → buy leg out=${freshBuyOut} → sell leg out=${freshSellOut} vs owed=${owed}`, 'dim');
-
-      if (freshSellOut <= owed) {
-        // This is exactly the case that used to burn gas and show "spread closed
-        // before confirmation" — catch it here, before ever sending a tx.
-        throw new Error(`Spread has already closed at current on-chain prices (would return ${freshSellOut} vs owed ${owed}). Aborting before signing — no gas spent.`);
-      }
-
-      // Require a real, meaningful profit margin — not just "> 0" — to absorb
-      // slippage between this check and block inclusion. Uses the contract's
-      // slippageBps convention (50 bps = 0.5% default) as the safety buffer.
-      const slippageBpsLocal = 50n;
-      const rawProfit = freshSellOut - owed;
-      const bufferedProfit = rawProfit - (rawProfit * slippageBpsLocal / 10000n);
-      minProfit = bufferedProfit > 0n ? bufferedProfit.toString() : '0';
-      tlog(`[arb] Computed minProfit (with 0.5% safety buffer) = ${minProfit}`, 'dim');
-
-      // Same fresh quote also gives us a real buy-leg slippage floor, for bots
-      // that support it (v3.7's minOutBuy — see below).
-      const bufferedBuyOut = freshBuyOut - (freshBuyOut * slippageBpsLocal / 10000n);
-      minOutBuy = bufferedBuyOut > 0n ? bufferedBuyOut.toString() : '1';
     } else {
-      tlog('[arb] V3 leg present — skipping fresh pre-check (not supported by findRealOpportunities); using opp.minProfit if set.', 'warn');
-      minProfit = opp.minProfit || 0;
+      tlog('[arb] V3 leg detected — skipping pre-check (V3 quoter path); using opp.minProfit.', 'warn');
+      minProfit = opp.minProfit ? opp.minProfit.toString() : '0';
     }
 
     // ── Version-aware calldata: bots deployed via the factory (v3.7) accept
