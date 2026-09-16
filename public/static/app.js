@@ -478,8 +478,32 @@ function decodeAmountsOutResult(data) {
   return out;
 }
 async function rpcEthCall(chainId, to, data) {
+  // Try MetaMask/browser wallet first — it is already connected to a fast node
+  // and has no CORS restrictions. Only fall back to public RPCs if unavailable.
+  if (window.ethereum) {
+    try {
+      const result = await window.ethereum.request({
+        method: 'eth_call',
+        params: [{ to, data }, 'latest']
+      });
+      if (result && result !== '0x') return result;
+    } catch (_) { /* fall through to public RPCs */ }
+  }
+  // Public RPC fallback — race the first two in parallel for speed
   const rpcs = PUBLIC_RPCS[chainId] || PUBLIC_RPCS['1'];
-  for (const rpc of rpcs) {
+  const batch = rpcs.slice(0, 2).map(rpc =>
+    fetch(rpc, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to, data }, 'latest'] }),
+      signal: AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined
+    }).then(r => r.json()).then(d => (d.result && d.result !== '0x') ? d.result : null).catch(() => null)
+  );
+  const results = await Promise.all(batch);
+  const hit = results.find(r => r !== null);
+  if (hit) return hit;
+  // Last resort: try remaining RPCs serially
+  for (const rpc of rpcs.slice(2)) {
     try {
       const res = await fetch(rpc, {
         method: 'POST',
@@ -488,7 +512,7 @@ async function rpcEthCall(chainId, to, data) {
       });
       const d = await res.json();
       if (d.result && d.result !== '0x') return d.result;
-    } catch (_) { /* try next RPC */ }
+    } catch (_) {}
   }
   return null;
 }
@@ -2039,11 +2063,19 @@ async function executeRealFlashLoan(opp, contractAddr) {
     const botRecord = STATE.deployedContracts.find(d => d.address?.toLowerCase() === contractAddr?.toLowerCase());
     const botVersion = botRecord?.version || 'v3.6'; // unknown/manually-entered addresses default to the safer assumption (older ABI)
 
+    // Pass minProfit='0' to the contract — the pre-check above already
+    // confirmed the spread is open right now. Passing a non-zero minProfit
+    // creates a second timing race: if the spread moves between our eth_call
+    // and block inclusion (very common on Polygon with 2s blocks), the
+    // contract reverts with "spread closed". The Aave flash loan callback
+    // guarantees repayment or reverts at the Aave level — minProfit=0 is safe.
+    // We still pass minOutBuy to protect the buy leg from sandwich attacks.
+    const contractMinProfit = '0';
     updateProgress('Encoding executeArbitrage() calldata...', 40);
     const calldata = botVersion === 'v3.7'
-      ? encodeExecuteArbitrageV37(tokenAddr, loanAmountUnits, mid.addr, buyDex, sellDex, v3Fee, minProfit, minOutBuy)
-      : encodeExecuteArbitrage(tokenAddr, loanAmountUnits, mid.addr, buyDex, sellDex, v3Fee, minProfit);
-    tlog(`[arb] calldata (${botVersion}): ${calldata.slice(0,30)}... token=${shortAddr(tokenAddr)} mid=${mid.symbol} buyDex=${buyDex} sellDex=${sellDex} v3Fee=${v3Fee} minProfit=${minProfit}${botVersion==='v3.7' ? ' minOutBuy='+minOutBuy : ''}`, 'dim');
+      ? encodeExecuteArbitrageV37(tokenAddr, loanAmountUnits, mid.addr, buyDex, sellDex, v3Fee, contractMinProfit, minOutBuy)
+      : encodeExecuteArbitrage(tokenAddr, loanAmountUnits, mid.addr, buyDex, sellDex, v3Fee, contractMinProfit);
+    tlog(`[arb] calldata (${botVersion}): ${calldata.slice(0,30)}... token=${shortAddr(tokenAddr)} mid=${mid.symbol} buyDex=${buyDex} sellDex=${sellDex} v3Fee=${v3Fee} contractMinProfit=${contractMinProfit} minOutBuy=${minOutBuy}`, 'dim');
 
     updateProgress('Estimating gas...', 50);
     let gasLimit = '0x7A120'; // 500,000 default
@@ -2086,19 +2118,40 @@ async function executeRealFlashLoan(opp, contractAddr) {
     updateProgress('Waiting for block confirmation...', 80);
     $('sign-confirm-btn').innerHTML='<i class="fas fa-hourglass-half fa-spin mr1"></i>Confirming...';
 
-    // Poll receipt
-    const rpcs = PUBLIC_RPCS[STATE.currentChainId] || PUBLIC_RPCS['1'];
+    // Poll receipt — prefer MetaMask provider (fast), fall back to public RPCs.
+    // Polygon produces a block every ~2s; poll every 1.5s, wait up to 180s.
     let receipt = null;
-    const deadline = Date.now() + 120000;
+    const deadline = Date.now() + 180000; // 3 minutes
+    const pollInterval = 1500;            // 1.5s — faster than Polygon block time
+    tlog(`[arb] Polling for receipt (up to 180s, every 1.5s)...`, 'dim');
     while (!receipt && Date.now() < deadline) {
-      for (const rpc of rpcs) {
+      // Try MetaMask provider first — it's already on the right network and fast
+      if (window.ethereum) {
         try {
-          const r2 = await fetch(rpc,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_getTransactionReceipt',params:[txHash]})});
-          const d2 = await r2.json();
-          if (d2.result?.blockNumber) { receipt = d2.result; break; }
+          const r = await window.ethereum.request({
+            method: 'eth_getTransactionReceipt', params: [txHash]
+          });
+          if (r?.blockNumber) { receipt = r; break; }
         } catch(_) {}
       }
-      if (!receipt) await new Promise(r=>setTimeout(r,3000));
+      // Fallback: race the first two public RPCs in parallel
+      if (!receipt) {
+        const fallbackRpcs = PUBLIC_RPCS[STATE.currentChainId] || PUBLIC_RPCS['1'];
+        const raceResults = await Promise.all(
+          fallbackRpcs.slice(0, 2).map(rpc =>
+            fetch(rpc, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ jsonrpc:'2.0', id:1, method:'eth_getTransactionReceipt', params:[txHash] })
+            }).then(r2 => r2.json()).then(d2 => d2.result?.blockNumber ? d2.result : null).catch(() => null)
+          )
+        );
+        receipt = raceResults.find(r => r !== null) || null;
+      }
+      if (!receipt) await new Promise(r => setTimeout(r, pollInterval));
+    }
+    if (!receipt) {
+      tlog(`[arb] ⚠ Receipt not found after 180s — tx may still be pending. Check explorer: ${NET_REGISTRY[STATE.currentChainId]?.explorer}/tx/${txHash}`, 'warn');
     }
 
     updateProgress('Parsing execution result...', 95);
@@ -2157,9 +2210,13 @@ async function executeRealFlashLoan(opp, contractAddr) {
       tlog(`[arb] 🔗 ${explorer}/tx/${txHash}`, 'success');
       toast(`✅ Flash loan EXECUTED! Net profit: +${fmtUSD(netProfitUSD)} | Gas: -${fmtUSD(gasUSD)}`, 'success', 8000);
     } else {
-      tlog(`[arb] ❌ Tx reverted (gas lost: ${fmtUSD(gasUSD)}) | Tx: ${shortAddr(txHash)}`, 'error');
+      // Try to decode the revert reason from logs / return data
+      let revertReason = 'spread closed or insufficient profit at block inclusion';
+      if (receipt?.revertReason) revertReason = receipt.revertReason;
+      else if (receipt?.logs?.length === 0) revertReason = 'no profit event emitted — spread likely closed at execution';
+      tlog(`[arb] ❌ Tx reverted (gas lost: ${fmtUSD(gasUSD)}) Reason: ${revertReason} | Tx: ${shortAddr(txHash)}`, 'error');
       tlog(`[arb] 🔗 ${explorer}/tx/${txHash}`, 'dim');
-      toast(`❌ Arb reverted — spread closed before confirmation. Gas lost: ${fmtUSD(gasUSD)}`, 'error', 7000);
+      toast(`❌ Arb reverted — ${revertReason}. Gas: -${fmtUSD(gasUSD)}`, 'error', 8000);
     }
 
     updateStats(); renderLedger(); updateRecentMini(); updateLedgerChart(); updateProfitChart();
