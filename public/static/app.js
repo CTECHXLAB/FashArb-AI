@@ -529,6 +529,47 @@ async function freshV2Quote(chainId, router, amountIn, path) {
   } catch (_) { return null; }
 }
 
+// ── Uniswap V3 QuoterV2 fresh-quote support ───────────────────────────────────
+// quoteExactInputSingle((address tokenIn,address tokenOut,uint256 amountIn,uint24 fee,uint160 sqrtPriceLimitX96))
+// Selector 0xc6a5026a — confirmed against the real deployed QuoterV2 ABI. The
+// struct's fields are ALL static-width, so it's encoded inline with no
+// offset/head-tail indirection (unlike the dynamic address[] used by getAmountsOut).
+function encodeQuoteExactInputSingleCalldata(tokenIn, tokenOut, amountIn, fee, sqrtPriceLimitX96 = 0) {
+  const selector = 'c6a5026a';
+  const body = encodeAddress(tokenIn) + encodeAddress(tokenOut) + encodeUint256(amountIn) +
+               encodeUint24(fee) + encodeUint256(sqrtPriceLimitX96);
+  return '0x' + selector + body;
+}
+function decodeQuoteExactInputSingleResult(data) {
+  const hex = data.startsWith('0x') ? data.slice(2) : data;
+  if (hex.length < 64) return null;
+  return BigInt('0x' + hex.slice(0, 64)); // first return value: amountOut
+}
+// Returns the fresh output amount (BigInt) for a V3 single-hop quote, or null if unavailable.
+// NOTE: QuoterV2 is NOT a view function (it reverts internally to compute the quote),
+// but it never mutates state, so calling it via eth_call is safe and standard practice —
+// this is exactly how the Uniswap UI and most V3 bots get live V3 quotes off-chain.
+async function freshV3Quote(chainId, quoterAddr, tokenIn, tokenOut, fee, amountIn) {
+  if (!quoterAddr) return null;
+  try {
+    const calldata = encodeQuoteExactInputSingleCalldata(tokenIn, tokenOut, amountIn, fee);
+    const result = await rpcEthCall(chainId, quoterAddr, calldata);
+    if (!result) return null;
+    const amountOut = decodeQuoteExactInputSingleResult(result);
+    return (amountOut && amountOut > 0n) ? amountOut : null;
+  } catch (_) { return null; }
+}
+// Dex-agnostic fresh-quote dispatcher — routes to the V2 router or the V3 quoter
+// depending on which DEX this leg actually uses, so the safety check below covers
+// EVERY route the contract can execute, not just plain V2-vs-V2 arbs.
+async function freshLegQuote(chainId, dex, tokenIn, tokenOut, amountIn, v3Fee, net) {
+  if (dex === DEX_UNI_V3) {
+    return await freshV3Quote(chainId, net.uniV3Quoter, tokenIn, tokenOut, v3Fee, amountIn);
+  }
+  const router = (dex === DEX_SUSHI) ? net.sushiRouter : net.uniRouter;
+  return await freshV2Quote(chainId, router, amountIn, [tokenIn, tokenOut]);
+}
+
 // Encode constructor(address _addressProvider, address _uniV2Router, address _sushiRouter,
 //                    address _uniV3Router, address _uniV3Quoter, address _owner)
 // v3.6: 6 args — uniV3Quoter is 5th arg, owner is 6th
@@ -1985,15 +2026,25 @@ async function executeRealFlashLoan(opp, contractAddr) {
     const loanAmountUnits = BigInt(Math.round(tokenQtyCapped * 10 ** decimals)).toString();
     tlog(`[arb] Loan: $${opp.loanAmount.toFixed(0)} USD → ${tokenQtyCapped.toFixed(4)} ${tokenA} (${decimals}dec) = ${loanAmountUnits} units`, 'dim');
 
-    // Map DEX name strings to uint8 constants (DEX_UNI_V2=1, DEX_SUSHI=2, DEX_UNI_V3=3)
+    // Map DEX name strings to uint8 constants (DEX_UNI_V2=1, DEX_SUSHI=2, DEX_UNI_V3=3).
+    // IMPORTANT: returns null for anything the deployed contract doesn't actually support
+    // (Curve, Balancer, Camelot, Velodrome, etc. show up in the "simulated" opportunity
+    // feed for illustration, but the contract only knows Uniswap V2 / SushiSwap / Uniswap
+    // V3 — silently mapping an unknown name to V2 used to send a doomed, guaranteed-revert
+    // transaction against the wrong pool).
     const resolveDex = (dexName) => {
       const n = (dexName||'').toLowerCase();
       if (n.includes('v3') || n.includes('univ3')) return DEX_UNI_V3;
       if (n.includes('sushi')) return DEX_SUSHI;
-      return DEX_UNI_V2; // default: Uniswap V2
+      if (n.includes('uniswap') && n.includes('v2')) return DEX_UNI_V2;
+      if (n === 'quickswap' || n === 'uniswap v2' || n === '') return DEX_UNI_V2;
+      return null; // unsupported route — caller must abort
     };
     const buyDex  = resolveDex(opp.buyDex);
     const sellDex = resolveDex(opp.sellDex);
+    if (buyDex === null || sellDex === null) {
+      throw new Error(`This bot only executes Uniswap V2, SushiSwap, and Uniswap V3 routes. "${opp.buyDex} → ${opp.sellDex}" isn't real — likely a simulated/illustrative opportunity. Wait for a "source: live" opportunity instead.`);
+    }
 
     // V3 fee tier: use 3000 (0.3%) by default; low-spread pairs may use 500 (0.05%)
     const v3Fee = (buyDex === DEX_UNI_V3 || sellDex === DEX_UNI_V3)
@@ -2012,49 +2063,44 @@ async function executeRealFlashLoan(opp, contractAddr) {
 
     let minProfit = '0';
     let minOutBuy = '1';
-    if (buyDex !== DEX_UNI_V3 && sellDex !== DEX_UNI_V3) {
-      const buyRouter  = (buyDex  === DEX_SUSHI) ? net.sushiRouter : net.uniRouter;
-      const sellRouter = (sellDex === DEX_SUSHI) ? net.sushiRouter : net.uniRouter;
 
-      const freshBuyOut = await freshV2Quote(STATE.currentChainId, buyRouter, loanBig, [tokenAddr, mid.addr]);
-      if (freshBuyOut == null) {
-        // RPC unreachable — proceed with minProfit=0 rather than blocking entirely.
-        // The contract itself will revert if unprofitable; we save user a hard abort.
-        tlog('[arb] ⚠ Could not fetch fresh buy-leg quote (RPC issue) — proceeding with minProfit=0, contract will guard.', 'warn');
-      } else {
-        const freshSellOut = await freshV2Quote(STATE.currentChainId, sellRouter, freshBuyOut, [mid.addr, tokenAddr]);
-        if (freshSellOut == null) {
-          tlog('[arb] ⚠ Could not fetch fresh sell-leg quote (RPC issue) — proceeding with minProfit=0, contract will guard.', 'warn');
-        } else {
-          tlog(`[arb] Fresh quote → loan=${loanBig} buyOut=${freshBuyOut} sellOut=${freshSellOut} owed=${owed}`, 'dim');
-
-          if (freshSellOut <= owed) {
-            // Spread has fully closed — executing would 100% revert. Abort now.
-            throw new Error(
-              `Spread has fully closed (on-chain return ${freshSellOut} < owed ${owed}). ` +
-              `Aborting before signing — no gas spent. ` +
-              `Wait for the scanner to surface a new opportunity.`
-            );
-          }
-
-          // Spread is still open (possibly narrower than when scanned — that is fine).
-          // Compute minProfit from the CURRENT fresh quote with a 0.5% safety buffer
-          // to absorb slippage between this check and block inclusion.
-          const slippageBps = 50n; // 0.5%
-          const rawProfit = freshSellOut - owed;
-          const bufferedProfit = rawProfit - (rawProfit * slippageBps / 10000n);
-          minProfit = bufferedProfit > 0n ? bufferedProfit.toString() : '0';
-          const bufferedBuyOut = freshBuyOut - (freshBuyOut * slippageBps / 10000n);
-          minOutBuy = bufferedBuyOut > 0n ? bufferedBuyOut.toString() : '1';
-
-          const profitUSD = Number(rawProfit) / 10**decimals * tokenPriceUSD;
-          tlog(`[arb] ✅ Spread still live — rawProfit=${rawProfit} (~$${profitUSD.toFixed(2)}) minProfit=${minProfit} minOutBuy=${minOutBuy}`, 'success');
-        }
-      }
-    } else {
-      tlog('[arb] V3 leg detected — skipping pre-check (V3 quoter path); using opp.minProfit.', 'warn');
-      minProfit = opp.minProfit ? opp.minProfit.toString() : '0';
+    // Fresh re-quote covers BOTH legs regardless of whether they're V2 or V3 —
+    // this used to only run for pure V2-vs-V2 routes and silently skip the check
+    // (using stale/fabricated opp.minProfit instead) whenever either leg was V3.
+    // Skipping it is exactly what let un-executable "opportunities" through to
+    // eth_sendTransaction, where they were guaranteed to revert on-chain.
+    const freshBuyOut = await freshLegQuote(STATE.currentChainId, buyDex, tokenAddr, mid.addr, loanBig, v3Fee, net);
+    if (freshBuyOut == null) {
+      throw new Error('Could not get a fresh on-chain quote for the buy leg (RPC issue, or this pool/pair does not actually exist on-chain). Aborting before signing — no gas spent.');
     }
+    const freshSellOut = await freshLegQuote(STATE.currentChainId, sellDex, mid.addr, tokenAddr, freshBuyOut, v3Fee, net);
+    if (freshSellOut == null) {
+      throw new Error('Could not get a fresh on-chain quote for the sell leg (RPC issue, or this pool/pair does not actually exist on-chain). Aborting before signing — no gas spent.');
+    }
+    tlog(`[arb] Fresh quote → loan=${loanBig} buyOut=${freshBuyOut} sellOut=${freshSellOut} owed=${owed}`, 'dim');
+
+    if (freshSellOut <= owed) {
+      // Spread has fully closed (or never existed) — executing would 100% revert. Abort now.
+      throw new Error(
+        `Spread has fully closed or never existed on-chain (on-chain return ${freshSellOut} < owed ${owed}). ` +
+        `Aborting before signing — no gas spent. Wait for a fresh "live" opportunity — genuine V2/V2 arb ` +
+        `spreads on a public mainnet mempool are usually captured by MEV/atomic-arb bots within the same ` +
+        `block, so this will abort often; that is expected, not a bug.`
+      );
+    }
+
+    // Spread is still open (possibly narrower than when scanned — that is fine).
+    // Compute minProfit from the CURRENT fresh quote with a 0.5% safety buffer
+    // to absorb slippage between this check and block inclusion.
+    const slippageBps = 50n; // 0.5%
+    const rawProfit = freshSellOut - owed;
+    const bufferedProfit = rawProfit - (rawProfit * slippageBps / 10000n);
+    minProfit = bufferedProfit > 0n ? bufferedProfit.toString() : '0';
+    const bufferedBuyOut = freshBuyOut - (freshBuyOut * slippageBps / 10000n);
+    minOutBuy = bufferedBuyOut > 0n ? bufferedBuyOut.toString() : '1';
+
+    const profitUSD = Number(rawProfit) / 10**decimals * tokenPriceUSD;
+    tlog(`[arb] ✅ Spread still live — rawProfit=${rawProfit} (~$${profitUSD.toFixed(2)}) minProfit=${minProfit} minOutBuy=${minOutBuy}`, 'success');
 
     // ── Version-aware calldata: bots deployed via the factory (v3.7) accept
     // an explicit minOutBuy for real buy-leg slippage protection; bots from
@@ -2078,7 +2124,7 @@ async function executeRealFlashLoan(opp, contractAddr) {
     tlog(`[arb] calldata (${botVersion}): ${calldata.slice(0,30)}... token=${shortAddr(tokenAddr)} mid=${mid.symbol} buyDex=${buyDex} sellDex=${sellDex} v3Fee=${v3Fee} contractMinProfit=${contractMinProfit} minOutBuy=${minOutBuy}`, 'dim');
 
     updateProgress('Estimating gas...', 50);
-    let gasLimit = '0x7A120'; // 500,000 default
+    let gasLimit;
     try {
       const est = await window.ethereum.request({
         method: 'eth_estimateGas',
@@ -2087,7 +2133,15 @@ async function executeRealFlashLoan(opp, contractAddr) {
       gasLimit = '0x' + Math.ceil(parseInt(est,16) * 1.25).toString(16);
       tlog(`[arb] Gas estimate: ${parseInt(est,16).toLocaleString()} (+ 25% = ${parseInt(gasLimit,16).toLocaleString()})`, 'success');
     } catch(e) {
-      tlog(`[arb] Gas estimate failed: ${e.message} — using default 500k`, 'warn');
+      // eth_estimateGas simulates the tx against current chain state — if THIS fails,
+      // the real transaction would revert too (the fresh-quote check above can still
+      // pass and then lose the race to another trade in the very next block, or the
+      // node's gas estimation can catch edge cases the pre-check can't). Previously
+      // this just logged a warning and sent the tx anyway with a default 500k gas
+      // limit, which meant every doomed transaction still got signed and broadcast,
+      // burning real gas on a guaranteed revert. Abort instead — no gas spent.
+      const reason = e?.message || 'unknown error';
+      throw new Error(`Gas estimation failed — this transaction would revert on-chain right now (${reason}). Aborting before signing to avoid wasting gas on a guaranteed failure.`);
     }
 
     updateProgress('MetaMask signing — approve in wallet...', 65);
