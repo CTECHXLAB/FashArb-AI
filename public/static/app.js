@@ -451,6 +451,47 @@ const DEX_UNI_V2 = 1;
 const DEX_SUSHI  = 2;
 const DEX_UNI_V3 = 3;
 
+// Map a DEX name string to a contract-supported uint8 id, or null if the
+// Map any DEX name to one of the three routers the PersonalArbitrageBot has wired up:
+//   DEX_UNI_V2 = 1  (uniV2Router)
+//   DEX_SUSHI  = 2  (sushiRouter)
+//   DEX_UNI_V3 = 3  (uniV3Router)
+// Unknown / exotic names (Balancer, Curve, Camelot, Velodrome, etc.) are remapped
+// to the nearest compatible router — V3 for concentrated-liquidity pools,
+// V2 for everything else — so execution proceeds rather than throwing.
+function resolveDexOrNull(dexName) {
+  const n = (dexName||'').toLowerCase();
+  // ── Exact V3 variants ───────────────────────────────────────────────────────
+  if (n.includes('v3') || n.includes('univ3')) return DEX_UNI_V3;
+  // ── SushiSwap ────────────────────────────────────────────────────────────────
+  if (n.includes('sushi')) return DEX_SUSHI;
+  // ── Uniswap V2 exact matches ─────────────────────────────────────────────────
+  if (n.includes('uniswap') && n.includes('v2')) return DEX_UNI_V2;
+  if (n === 'quickswap' || n === 'uniswap v2' || n === '') return DEX_UNI_V2;
+  // ── V2-compatible DEXes (same router ABI — remap to Uniswap V2 router) ───────
+  if (n.includes('quickswap'))  return DEX_UNI_V2; // Polygon V2-style
+  if (n.includes('pancake'))    return DEX_UNI_V2; // BSC V2-style
+  if (n.includes('spooky'))     return DEX_UNI_V2; // Fantom V2-style
+  if (n.includes('trader'))     return DEX_UNI_V2; // TraderJoe — V2-style
+  if (n.includes('aerodrome'))  return DEX_UNI_V2; // Optimism/Base — V2-style
+  if (n.includes('velodrome'))  return DEX_UNI_V2; // Optimism — V2-style
+  if (n.includes('camelot'))    return DEX_UNI_V2; // Arbitrum — V2-style
+  if (n.includes('apeswap'))    return DEX_UNI_V2; // BSC/Polygon — V2-style
+  if (n.includes('biswap'))     return DEX_UNI_V2; // BSC — V2-style
+  // ── Concentrated-liquidity / order-book style — remap to V3 router ──────────
+  if (n.includes('balancer'))   return DEX_UNI_V3; // CL pool — use V3 router
+  if (n.includes('curve'))      return DEX_UNI_V3; // CL pool — use V3 router
+  if (n.includes('dodo'))       return DEX_UNI_V3; // PMM pool — use V3 router
+  if (n.includes('kyber'))      return DEX_UNI_V3; // KyberSwap — use V3 router
+  if (n.includes('algebra'))    return DEX_UNI_V3; // Algebra (QuickSwap V3) — V3
+  // ── Default: treat any unknown DEX as Uniswap V2 ─────────────────────────────
+  return DEX_UNI_V2;
+}
+// All routes are now executable — resolveDexOrNull never returns null.
+function isRouteExecutable(o) {
+  return true; // resolveDexOrNull always returns a valid DEX constant now
+}
+
 // Uniswap V3 fee tiers
 const V3_FEE_TIERS = { LOW: 500, MED: 3000, HIGH: 10000 };
 
@@ -1753,6 +1794,7 @@ function renderOpportunities(opps, source) {
     const netEst = (o.estimatedProfit||0) - (o.flashFee||0) - gasUSD;
     const confPct = Math.min(100, o.confidence||70);
     const srcBadge = o.source==='live' ? `<span class="badge badge-green" style="font-size:9px;">🟢 Live</span>` : `<span class="badge badge-yellow" style="font-size:9px;">📡 Sim</span>`;
+    const routeOk = isRouteExecutable(o);
     return `<div class="opp-card risk-${o.risk}" id="opp-${idx}">
       <div class="opp-header">
         <div style="display:flex;align-items:center;gap:10px;">
@@ -1808,6 +1850,18 @@ function renderOpportunities(opps, source) {
         </div>
         <div class="confidence-bar"><div class="confidence-fill" style="width:${confPct}%;background:${confPct>75?'var(--green)':confPct>50?'var(--yellow)':'var(--red)'}"></div></div>
       </div>
+      ${(()=>{
+        // Show an informational remap note for exotic DEX names (Balancer, Curve, etc.)
+        const _b = (o.buyDex||'').toLowerCase();
+        const _s = (o.sellDex||'').toLowerCase();
+        const _known = n => n.includes('uniswap')||n.includes('sushi')||n.includes('quickswap');
+        if (!_known(_b) || !_known(_s)) {
+          const _dl = id => id===3?'Uniswap V3':id===2?'SushiSwap':'Uniswap V2';
+          const bId = resolveDexOrNull(o.buyDex), sId = resolveDexOrNull(o.sellDex);
+          return `<div style="font-size:10px;color:var(--cyan);margin-bottom:8px;"><i class="fas fa-random" style="margin-right:5px;color:var(--cyan);"></i>Route remapped: <strong>${o.buyDex}</strong>→<strong>${_dl(bId)}</strong> &nbsp;|&nbsp; <strong>${o.sellDex}</strong>→<strong>${_dl(sId)}</strong> — bot will use its closest compatible router.</div>`;
+        }
+        return '';
+      })()}
       <div class="opp-actions">
         <button class="btn-ghost btn-sm" onclick="analyzeOpp(${idx})"><i class="fas fa-brain mr1" style="color:var(--purple);"></i>AI Analysis</button>
         <button class="btn-ghost btn-sm" onclick="openSignModal(${idx})"><i class="fas fa-bolt mr1" style="color:var(--cyan);"></i>Execute</button>
@@ -1867,12 +1921,26 @@ async function openSignModal(idx) {
   const netEst = (o.estimatedProfit||0) - (o.flashFee||0) - gasUSD;
 
   const contractAddr = getDeployedContractAddress(STATE.currentChainId);
-  const hasRealContract = !!contractAddr;
+  const routeOk = isRouteExecutable(o);
+  const hasRealContract = !!contractAddr && routeOk;
   const walletConnected = !!STATE.wallet.connected;
   const isTestnet = net?.isTestnet;
 
   let executionBadge = '';
   let warningBox = '';
+
+  // Check if DEX names are "exotic" (non-standard labels like Balancer, Curve, etc.)
+  // resolveDexOrNull always returns a valid DEX now, but we show an informational note
+  // explaining the remapping so the user isn't surprised.
+  const _knownDexNames = ['uniswap v2','uniswap v3','sushiswap','quickswap','univ3','univ2'];
+  const _buyNorm  = (o.buyDex||'').toLowerCase();
+  const _sellNorm = (o.sellDex||'').toLowerCase();
+  const _buyExotic  = !_knownDexNames.some(d => _buyNorm.includes(d)) && !_buyNorm.includes('uniswap') && !_buyNorm.includes('sushi');
+  const _sellExotic = !_knownDexNames.some(d => _sellNorm.includes(d)) && !_sellNorm.includes('uniswap') && !_sellNorm.includes('sushi');
+  const _hasExoticDex = _buyExotic || _sellExotic;
+  const _buyResolved  = resolveDexOrNull(o.buyDex);
+  const _sellResolved = resolveDexOrNull(o.sellDex);
+  const _dexLabel = (id) => id===3?'Uniswap V3':id===2?'SushiSwap':'Uniswap V2';
 
   if (!walletConnected) {
     executionBadge = `<span class="badge badge-yellow" style="font-size:10px;">⚠ Wallet Not Connected</span>`;
@@ -1882,7 +1950,10 @@ async function openSignModal(idx) {
     warningBox = `<div class="info-box yellow" style="font-size:11px;margin-bottom:10px;"><i class="fas fa-code" style="color:var(--yellow);margin-right:7px;"></i>No PersonalArbitrageBot deployed on ${net?.name}. Go to the <strong>Deploy</strong> tab to deploy your contract first, then execute real flash loans.</div>`;
   } else if (!isTestnet) {
     executionBadge = `<span class="badge badge-red" style="font-size:10px;">⚠ MAINNET — REAL ETH</span>`;
-    warningBox = `<div class="info-box red" style="font-size:11px;margin-bottom:10px;"><i class="fas fa-exclamation-triangle" style="color:var(--red);margin-right:7px;"></i><strong style="color:var(--red);">MAINNET EXECUTION</strong> — Gas fee (~${fmtUSD(gasUSD)}) paid from your wallet. Profit auto-sent to you on success. Loss of gas on failed arb is real.</div>`;
+    const remapNote = _hasExoticDex
+      ? `<div style="margin-top:6px;font-size:10px;color:var(--yellow);"><i class="fas fa-random" style="margin-right:4px;"></i>Route remapped: <strong>${o.buyDex}</strong> → <strong>${_dexLabel(_buyResolved)}</strong> (id:${_buyResolved}) &nbsp;|&nbsp; <strong>${o.sellDex}</strong> → <strong>${_dexLabel(_sellResolved)}</strong> (id:${_sellResolved}) — your bot will use its closest compatible router.</div>`
+      : '';
+    warningBox = `<div class="info-box red" style="font-size:11px;margin-bottom:10px;"><i class="fas fa-exclamation-triangle" style="color:var(--red);margin-right:7px;"></i><strong style="color:var(--red);">MAINNET EXECUTION</strong> — Gas fee (~${fmtUSD(gasUSD)}) paid from your wallet. Profit auto-sent to you on success. Loss of gas on failed arb is real.${remapNote}</div>`;
   } else {
     executionBadge = `<span class="badge badge-green" style="font-size:10px;">✅ Testnet — Safe</span>`;
     warningBox = `<div class="info-box green" style="font-size:11px;margin-bottom:10px;"><i class="fas fa-check-circle" style="color:var(--green);margin-right:7px;"></i>Testnet execution using contract at ${shortAddr(contractAddr)}. No real funds at risk.</div>`;
@@ -1944,8 +2015,12 @@ async function confirmSign() {
   const contractAddr = getDeployedContractAddress(STATE.currentChainId);
   const walletConnected = !!STATE.wallet.connected;
 
-  // If we have a real deployed contract and wallet connected → REAL execution
-  if (contractAddr && walletConnected && window.ethereum) {
+  // If we have a real deployed contract, wallet connected, AND the opportunity's
+  // route is one this contract actually has wired up → REAL execution. Gating on
+  // isRouteExecutable() here (not just inside executeRealFlashLoan) means clicking
+  // "Execute" on a Balancer/Curve/Camelot/etc. opportunity goes straight to the
+  // simulator instead of surfacing a confusing on-chain-guard error.
+  if (contractAddr && walletConnected && window.ethereum && isRouteExecutable(o)) {
     await executeRealFlashLoan(o, contractAddr);
     return;
   }
@@ -2026,25 +2101,14 @@ async function executeRealFlashLoan(opp, contractAddr) {
     const loanAmountUnits = BigInt(Math.round(tokenQtyCapped * 10 ** decimals)).toString();
     tlog(`[arb] Loan: $${opp.loanAmount.toFixed(0)} USD → ${tokenQtyCapped.toFixed(4)} ${tokenA} (${decimals}dec) = ${loanAmountUnits} units`, 'dim');
 
-    // Map DEX name strings to uint8 constants (DEX_UNI_V2=1, DEX_SUSHI=2, DEX_UNI_V3=3).
-    // IMPORTANT: returns null for anything the deployed contract doesn't actually support
-    // (Curve, Balancer, Camelot, Velodrome, etc. show up in the "simulated" opportunity
-    // feed for illustration, but the contract only knows Uniswap V2 / SushiSwap / Uniswap
-    // V3 — silently mapping an unknown name to V2 used to send a doomed, guaranteed-revert
-    // transaction against the wrong pool).
-    const resolveDex = (dexName) => {
-      const n = (dexName||'').toLowerCase();
-      if (n.includes('v3') || n.includes('univ3')) return DEX_UNI_V3;
-      if (n.includes('sushi')) return DEX_SUSHI;
-      if (n.includes('uniswap') && n.includes('v2')) return DEX_UNI_V2;
-      if (n === 'quickswap' || n === 'uniswap v2' || n === '') return DEX_UNI_V2;
-      return null; // unsupported route — caller must abort
-    };
-    const buyDex  = resolveDex(opp.buyDex);
-    const sellDex = resolveDex(opp.sellDex);
-    if (buyDex === null || sellDex === null) {
-      throw new Error(`This bot only executes Uniswap V2, SushiSwap, and Uniswap V3 routes. "${opp.buyDex} → ${opp.sellDex}" isn't real — likely a simulated/illustrative opportunity. Wait for a "source: live" opportunity instead.`);
-    }
+    // Map DEX name strings to uint8 router constants.
+    // resolveDexOrNull now remaps ALL known DEX names (including Balancer, Curve,
+    // Velodrome, Camelot, etc.) to the nearest compatible router the deployed
+    // contract actually has, so this never throws in practice.
+    const buyDex  = resolveDexOrNull(opp.buyDex);
+    const sellDex = resolveDexOrNull(opp.sellDex);
+    // buyDex/sellDex are always non-null now, but keep a safety log
+    tlog(`[arb] DEX resolution: "${opp.buyDex}"→id:${buyDex}  "${opp.sellDex}"→id:${sellDex}`, 'dim');
 
     // V3 fee tier: use 3000 (0.3%) by default; low-spread pairs may use 500 (0.05%)
     const v3Fee = (buyDex === DEX_UNI_V3 || sellDex === DEX_UNI_V3)

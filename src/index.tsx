@@ -264,15 +264,24 @@ function getSimulatedPrices(): Record<string, any> {
 }
 
 function generateOpportunities(ethPrice: number): any[] {
+  // IMPORTANT: buy/sell labels here MUST be routes the deployed PersonalArbitrageBot
+  // actually has wired up (uniV2Router / sushiRouter / uniV3Router). It has zero
+  // Curve/Balancer/Camelot/Velodrome integration, so those used to appear as
+  // "opportunities" a user could click "Execute REAL" on and get a confusing
+  // guard error (or, before that guard existed, a guaranteed on-chain revert).
+  // Restricting the label set to real routes means every simulated opportunity
+  // is at least routable — its fabricated numbers still get caught and aborted
+  // by the fresh on-chain re-quote right before signing, which is the correct,
+  // non-confusing way for a fake spread to fail.
   const pairs = [
     { pair:'ETH/USDC', buy:'Uniswap V3', sell:'SushiSwap', base:ethPrice },
-    { pair:'ETH/USDT', buy:'SushiSwap', sell:'Curve', base:ethPrice },
-    { pair:'ETH/DAI',  buy:'Balancer', sell:'Uniswap V3', base:ethPrice },
-    { pair:'WBTC/ETH', buy:'Uniswap V3', sell:'Curve', base:18.7 },
+    { pair:'ETH/USDT', buy:'SushiSwap', sell:'Uniswap V2', base:ethPrice },
+    { pair:'ETH/DAI',  buy:'Uniswap V2', sell:'Uniswap V3', base:ethPrice },
+    { pair:'WBTC/ETH', buy:'Uniswap V3', sell:'SushiSwap', base:18.7 },
     { pair:'LINK/USDC',buy:'SushiSwap', sell:'Uniswap V3', base:14.23 },
-    { pair:'AAVE/ETH', buy:'Uniswap V3', sell:'Balancer', base:0.031 },
-    { pair:'ARB/USDC', buy:'Camelot', sell:'SushiSwap', base:1.24 },
-    { pair:'OP/USDC',  buy:'Velodrome', sell:'Uniswap V3', base:2.18 },
+    { pair:'AAVE/ETH', buy:'Uniswap V3', sell:'Uniswap V2', base:0.031 },
+    { pair:'ARB/USDC', buy:'Uniswap V2', sell:'SushiSwap', base:1.24 },
+    { pair:'OP/USDC',  buy:'SushiSwap', sell:'Uniswap V3', base:2.18 },
   ]
   return pairs.slice(0, 4 + Math.floor(Math.random() * 4)).map((p, i) => {
     const spread = 0.08 + Math.random() * 1.8
@@ -296,7 +305,7 @@ function generateOpportunities(ethPrice: number): any[] {
       gasEstimateUSD: parseFloat(gasUSD.toFixed(2)),
       confidence: Math.min(95, 42 + Math.round(spread * 28)),
       risk: spread > 1.2 ? 'HIGH' : spread > 0.5 ? 'MEDIUM' : 'LOW',
-      flashLoanProvider: ['Aave V3','Balancer','dYdX'][Math.floor(Math.random()*3)],
+      flashLoanProvider: 'Aave V3', // the deployed contract only ever borrows via Aave V3's flashLoanSimple
       expiresIn: 8 + Math.floor(Math.random() * 20),
       slippage: 0.3,
       flashFee: parseFloat(flashFee.toFixed(2)),
