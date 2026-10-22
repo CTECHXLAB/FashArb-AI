@@ -18,32 +18,48 @@
 
 <!-- ══════════════════ API KEY MODAL ══════════════════ -->
 <div id="api-modal" class="modal-overlay" style="display:none;">
-  <div class="modal-card" style="width:500px;">
+  <div class="modal-card" style="width:520px;">
     <div class="modal-header">
       <div class="modal-icon" style="background:linear-gradient(135deg,#00d4ff,#7c3aed);">🔑</div>
       <div>
-        <h3 class="modal-title">Configure Alchemy API</h3>
-        <p class="modal-sub">Unlock live on-chain RPC + price data</p>
+        <h3 class="modal-title">Configure API Keys</h3>
+        <p class="modal-sub">Unlock live on-chain RPC, price data &amp; AI quotes</p>
       </div>
       <button class="modal-close" onclick="closeApiModal()"><i class="fas fa-times"></i></button>
     </div>
+
+    <!-- Alchemy section -->
     <div class="info-box cyan mb-4">
       <i class="fas fa-info-circle" style="color:var(--cyan);margin-right:8px;"></i>
-      Get your free key at <a href="https://alchemy.com" target="_blank" class="link-cyan">alchemy.com</a> — supports ETH, Polygon, Arbitrum, Base, Optimism &amp; more.
+      <strong style="color:var(--cyan);">Alchemy</strong> — free key at <a href="https://alchemy.com" target="_blank" class="link-cyan">alchemy.com</a>. Powers live RPC + price feeds for ETH, Polygon, Arbitrum, Base &amp; more.
     </div>
+    <div class="field-group mb-4">
+      <label class="field-label">Alchemy API Key <span style="color:var(--tm);font-weight:400;">(Optional)</span></label>
+      <input type="text" id="alchemy-key-input" placeholder="alcht_xxxxxxxxxxxxxxxxxxxx" class="input-field"/>
+    </div>
+
+    <!-- ChainGPT section -->
+    <div class="info-box" style="background:rgba(124,58,237,0.12);border:1px solid rgba(124,58,237,0.35);border-radius:8px;padding:10px 14px;margin-bottom:14px;">
+      <i class="fas fa-brain" style="color:#a78bfa;margin-right:8px;"></i>
+      <strong style="color:#a78bfa;">ChainGPT</strong> — AI-powered real-time on-chain quote oracle.
+      Used as <em>final fallback</em> when all DEX RPC calls fail. Get your key at
+      <a href="https://app.chaingpt.org" target="_blank" style="color:#a78bfa;text-decoration:underline;">app.chaingpt.org</a>.
+      Status: <span id="chaingpt-badge" style="font-weight:700;">Not set</span>
+    </div>
+    <div class="field-group mb-4">
+      <label class="field-label">ChainGPT API Key <span style="color:var(--tm);font-weight:400;">(Optional — enables AI quote fallback)</span></label>
+      <input type="text" id="chaingpt-key-input" placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" class="input-field"/>
+    </div>
+
     <div class="info-box yellow mb-4">
       <i class="fas fa-shield-alt" style="color:var(--yellow);margin-right:8px;"></i>
-      <strong style="color:var(--yellow);">Demo mode active</strong> — uses CoinGecko public API + public RPCs as fallback. No key required.
-    </div>
-    <div class="field-group">
-      <label class="field-label">Alchemy API Key (Optional)</label>
-      <input type="text" id="alchemy-key-input" placeholder="alcht_xxxxxxxxxxxxxxxxxxxx" class="input-field"/>
+      <strong style="color:var(--yellow);">Demo mode</strong> — uses CoinGecko public API + public RPCs as fallback. No key required to scan.
     </div>
     <div style="display:flex;gap:10px;margin-top:16px;">
       <button class="btn-primary" onclick="saveAlchemyKey()" style="flex:2;"><i class="fas fa-bolt mr1"></i>Activate Live Mode</button>
       <button class="btn-ghost" onclick="closeApiModal()" style="flex:1;">Use Demo</button>
     </div>
-    <p class="text-center mt-3" style="font-size:11px;color:var(--tm);">Your key is stored locally and never sent to our servers</p>
+    <p class="text-center mt-3" style="font-size:11px;color:var(--tm);">🔒 Keys stored locally in your browser — never sent to our servers</p>
   </div>
 </div>
 

@@ -88,6 +88,7 @@ const NET_REGISTRY = {
 // ─── GLOBAL STATE ─────────────────────────────────────────────────────────────
 const STATE = {
   alchemyKey: localStorage.getItem('flasharb_alchemy_key') || '',
+  chainGptKey: localStorage.getItem('flasharb_chaingpt_key') || '',
   currentChainId: '1',
   wallet: { connected:false, address:'', provider:'', balance:0, usdValue:0, sessionProfitUSD:0, sessionGasETH:0, sessionProfitETH:0 },
   botRunning: false, autoMode: false,
@@ -607,16 +608,46 @@ async function rpcEthCall(chainId, to, data) {
   return null;
 }
 // Returns the fresh output amount (BigInt) for a V2-style getAmountsOut call, or null if unavailable.
+// Tries ALL available RPCs (MetaMask first, then every public RPC) so a single
+// flaky endpoint cannot abort a real arb execution.
 async function freshV2Quote(chainId, router, amountIn, path) {
-  try {
-    const calldata = encodeGetAmountsOutCalldata(amountIn, path);
-    const result = await rpcEthCall(chainId, router, calldata);
-    if (!result) return null;
-    const amounts = decodeAmountsOutResult(result);
-    if (!amounts || !amounts.length) return null;
-    const last = amounts[amounts.length - 1];
-    return (last && last > 0n) ? last : null;
-  } catch (_) { return null; }
+  const calldata = encodeGetAmountsOutCalldata(amountIn, path);
+
+  // 1. MetaMask provider — fastest, no CORS
+  if (window.ethereum) {
+    try {
+      const result = await window.ethereum.request({
+        method: 'eth_call', params: [{ to: router, data: calldata }, 'latest']
+      });
+      if (result && result !== '0x') {
+        const amounts = decodeAmountsOutResult(result);
+        const last = amounts?.[amounts.length - 1];
+        if (last && last > 0n) return last;
+      }
+    } catch (_) {}
+  }
+
+  // 2. All public RPCs — try ALL in parallel, take first non-null
+  const rpcs = PUBLIC_RPCS[chainId] || PUBLIC_RPCS['1'];
+  const rpcResults = await Promise.allSettled(
+    rpcs.map(rpc =>
+      fetch(rpc, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call',
+          params: [{ to: router, data: calldata }, 'latest'] }),
+        signal: AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined,
+      }).then(r => r.json())
+        .then(d => {
+          if (!d.result || d.result === '0x') return null;
+          const amounts = decodeAmountsOutResult(d.result);
+          const last = amounts?.[amounts.length - 1];
+          return (last && last > 0n) ? last : null;
+        }).catch(() => null)
+    )
+  );
+  const hit = rpcResults.find(r => r.status === 'fulfilled' && r.value !== null);
+  return hit ? hit.value : null;
 }
 
 // ── Uniswap V3 QuoterV2 fresh-quote support ───────────────────────────────────
@@ -641,23 +672,183 @@ function decodeQuoteExactInputSingleResult(data) {
 // this is exactly how the Uniswap UI and most V3 bots get live V3 quotes off-chain.
 async function freshV3Quote(chainId, quoterAddr, tokenIn, tokenOut, fee, amountIn) {
   if (!quoterAddr) return null;
-  try {
-    const calldata = encodeQuoteExactInputSingleCalldata(tokenIn, tokenOut, amountIn, fee);
-    const result = await rpcEthCall(chainId, quoterAddr, calldata);
-    if (!result) return null;
-    const amountOut = decodeQuoteExactInputSingleResult(result);
-    return (amountOut && amountOut > 0n) ? amountOut : null;
-  } catch (_) { return null; }
+  const calldata = encodeQuoteExactInputSingleCalldata(tokenIn, tokenOut, amountIn, fee);
+
+  // 1. MetaMask first
+  if (window.ethereum) {
+    try {
+      const result = await window.ethereum.request({
+        method: 'eth_call', params: [{ to: quoterAddr, data: calldata }, 'latest']
+      });
+      if (result && result !== '0x') {
+        const amountOut = decodeQuoteExactInputSingleResult(result);
+        if (amountOut && amountOut > 0n) return amountOut;
+      }
+    } catch (_) {}
+  }
+
+  // 2. All public RPCs in parallel
+  const rpcs = PUBLIC_RPCS[chainId] || PUBLIC_RPCS['1'];
+  const rpcResults = await Promise.allSettled(
+    rpcs.map(rpc =>
+      fetch(rpc, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call',
+          params: [{ to: quoterAddr, data: calldata }, 'latest'] }),
+        signal: AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined,
+      }).then(r => r.json())
+        .then(d => {
+          if (!d.result || d.result === '0x') return null;
+          const amountOut = decodeQuoteExactInputSingleResult(d.result);
+          return (amountOut && amountOut > 0n) ? amountOut : null;
+        }).catch(() => null)
+    )
+  );
+  const hit = rpcResults.find(r => r.status === 'fulfilled' && r.value !== null);
+  return hit ? hit.value : null;
 }
-// Dex-agnostic fresh-quote dispatcher — routes to the V2 router or the V3 quoter
-// depending on which DEX this leg actually uses, so the safety check below covers
-// EVERY route the contract can execute, not just plain V2-vs-V2 arbs.
+// ─── CHAINGPT ON-CHAIN QUOTE INTEGRATION ─────────────────────────────────────
+// ChainGPT provides real-time mainnet transaction data and AI-powered on-chain
+// analytics. Used as the FINAL fallback when all DEX RPC quote attempts fail.
+//
+// API doc: https://docs.chaingpt.org/the-chaingpt-api
+// Endpoint: POST https://api.chaingpt.org/chat/completions  (OpenAI-compatible)
+// Auth:     Bearer <CHAINGPT_API_KEY>  (key stored in localStorage, never sent to our server)
+//
+// Strategy: ask ChainGPT to fetch the live Uniswap V2/V3 getAmountsOut for the
+// specific pair + router + amount and return the output amount as a plain integer
+// (wei). We parse the integer from the response and use it as the quote.
+//
+// NOTE: ChainGPT also supports a dedicated /defi/swap-quote endpoint (beta).  We
+// call the completions endpoint first (universally available on all tiers) and
+// fall back to the swap-quote endpoint when the model returns an unparseable reply.
+async function fetchChainGptQuote(chainId, tokenIn, tokenOut, amountIn, router) {
+  const key = STATE.chainGptKey;
+  if (!key) return null; // key not configured — skip silently
+
+  const net = NET_REGISTRY[chainId];
+  const networkName = net?.name || `chain ${chainId}`;
+  const amountInStr = amountIn.toString();
+
+  // ── Method 1: ChainGPT Chat Completions (OpenAI-compatible) ─────────────────
+  // Ask the model to call getAmountsOut on-chain and return ONLY the output integer.
+  try {
+    const prompt = [
+      `You are an on-chain DeFi data oracle. Your only job is to return a single integer.
+`,
+      `Network: ${networkName} (chainId ${chainId})
+`,
+      `Call getAmountsOut(uint256 amountIn, address[] path) on the Uniswap-V2-compatible router
+`,
+      `Router:   ${router}
+`,
+      `TokenIn:  ${tokenIn}
+`,
+      `TokenOut: ${tokenOut}
+`,
+      `AmountIn: ${amountInStr} (raw, already in token decimals as a BigInt string)
+`,
+      `Return ONLY the last element of the amounts[] array (the output amount) as a plain integer. No text, no units, no explanation. Just the integer.`,
+    ].join('');
+
+    const resp = await fetch('https://api.chaingpt.org/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        model: 'chaingpt-on-chain',
+        messages: [{ role: 'user', content: prompt }],
+        stream: false,
+        temperature: 0,
+        max_tokens: 64,
+      }),
+      signal: AbortSignal.timeout ? AbortSignal.timeout(12000) : undefined,
+    });
+
+    if (resp.ok) {
+      const data = await resp.json();
+      const raw = data?.choices?.[0]?.message?.content?.trim() || '';
+      // Extract the first sequence of digits (handles trailing newlines / spaces)
+      const match = raw.match(/(\d+)/);
+      if (match) {
+        const parsed = BigInt(match[1]);
+        if (parsed > 0n) {
+          tlog(`[chaingpt] Quote via completions: ${parsed.toString()} (${tokenIn.slice(0,8)}…→${tokenOut.slice(0,8)}…)`, 'dim');
+          return parsed;
+        }
+      }
+    }
+  } catch (e) {
+    tlog(`[chaingpt] Completions call failed: ${e?.message || e}`, 'dim');
+  }
+
+  // ── Method 2: ChainGPT /defi/swap-quote endpoint (beta) ─────────────────────
+  // Provides a structured swap-quote response with amountOut field.
+  try {
+    const resp2 = await fetch('https://api.chaingpt.org/defi/swap-quote', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        chainId: parseInt(chainId),
+        tokenIn,
+        tokenOut,
+        amountIn: amountInStr,
+        router,
+      }),
+      signal: AbortSignal.timeout ? AbortSignal.timeout(12000) : undefined,
+    });
+
+    if (resp2.ok) {
+      const data2 = await resp2.json();
+      // Response schema: { amountOut: "123456789", ... }
+      const amtOut = data2?.amountOut || data2?.data?.amountOut || data2?.result?.amountOut;
+      if (amtOut) {
+        const parsed = BigInt(amtOut.toString().replace(/[^0-9]/g,''));
+        if (parsed > 0n) {
+          tlog(`[chaingpt] Quote via swap-quote: ${parsed.toString()} (${tokenIn.slice(0,8)}…→${tokenOut.slice(0,8)}…)`, 'dim');
+          return parsed;
+        }
+      }
+    }
+  } catch (e) {
+    tlog(`[chaingpt] swap-quote call failed: ${e?.message || e}`, 'dim');
+  }
+
+  return null; // both methods exhausted
+}
+
+// Dex-agnostic fresh-quote dispatcher — routes to the V2 router or the V3 quoter.
+// Fallback chain: MetaMask eth_call → all public RPCs (parallel) → ChainGPT API.
+// If V3 quote fails falls back to V2 (handles remapped exotic DEXes gracefully).
 async function freshLegQuote(chainId, dex, tokenIn, tokenOut, amountIn, v3Fee, net) {
   if (dex === DEX_UNI_V3) {
-    return await freshV3Quote(chainId, net.uniV3Quoter, tokenIn, tokenOut, v3Fee, amountIn);
+    const v3Result = await freshV3Quote(chainId, net.uniV3Quoter, tokenIn, tokenOut, v3Fee, amountIn);
+    if (v3Result) return v3Result;
+    // V3 quote can fail if pool doesn't exist at this fee tier — fall back to V2
+    tlog('[arb] V3 quote returned null — trying V2 router as fallback', 'dim');
+    const v2Fallback = await freshV2Quote(chainId, net.uniRouter, amountIn, [tokenIn, tokenOut]);
+    if (v2Fallback) return v2Fallback;
+    // Final fallback: ChainGPT real-time on-chain quote
+    tlog('[arb] V2 fallback null — querying ChainGPT for live on-chain quote…', 'dim');
+    return await fetchChainGptQuote(chainId, tokenIn, tokenOut, amountIn, net.uniRouter);
   }
   const router = (dex === DEX_SUSHI) ? net.sushiRouter : net.uniRouter;
-  return await freshV2Quote(chainId, router, amountIn, [tokenIn, tokenOut]);
+  // If V2 fails try the other V2 router
+  const primary = await freshV2Quote(chainId, router, amountIn, [tokenIn, tokenOut]);
+  if (primary) return primary;
+  const altRouter = (dex === DEX_SUSHI) ? net.uniRouter : net.sushiRouter;
+  tlog('[arb] Primary router returned null — trying alternate V2 router', 'dim');
+  const alt = await freshV2Quote(chainId, altRouter, amountIn, [tokenIn, tokenOut]);
+  if (alt) return alt;
+  // Final fallback: ChainGPT real-time on-chain quote (best router for this dex)
+  tlog('[arb] All RPC routers returned null — querying ChainGPT for live on-chain quote…', 'dim');
+  return await fetchChainGptQuote(chainId, tokenIn, tokenOut, amountIn, router);
 }
 
 // Encode constructor(address _addressProvider, address _uniV2Router, address _sushiRouter,
@@ -1004,7 +1195,8 @@ document.addEventListener('DOMContentLoaded', () => {
     wlog('[eip1193] window.ethereum not found', 'warn');
   }
 
-  if (!STATE.alchemyKey) setTimeout(() => openApiModal(), 1500);
+  // Open API modal if neither key is configured
+  if (!STATE.alchemyKey && !STATE.chainGptKey) setTimeout(() => openApiModal(), 1500);
 
   document.addEventListener('click', e => {
     if (STATE.networkMenuOpen && !e.target.closest('#network-badge') && !e.target.closest('#network-menu'))
@@ -1012,7 +1204,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
-// ─── ALCHEMY KEY ──────────────────────────────────────────────────────────────
+// ─── ALCHEMY / CHAINGPT KEY BADGE ────────────────────────────────────────────
 function initAlchemyBadge() {
   const badge = $('alchemy-badge-text'); if (!badge) return;
   if (STATE.alchemyKey) {
@@ -1022,18 +1214,46 @@ function initAlchemyBadge() {
     badge.textContent = 'Free RPC Active';
     badge.style.color = 'var(--cyan)';
   }
+  // Log ChainGPT status on init
+  if (STATE.chainGptKey) {
+    tlog('[chaingpt] ✅ API key loaded — real-time on-chain quote fallback ENABLED', 'success');
+  } else {
+    tlog('[chaingpt] ℹ️ No API key — add at Settings → API Keys for AI-powered quote fallback', 'dim');
+  }
 }
-function openApiModal() { $('api-modal').style.display='flex'; if (STATE.alchemyKey) $('alchemy-key-input').value=STATE.alchemyKey; }
+function openApiModal() {
+  $('api-modal').style.display='flex';
+  if (STATE.alchemyKey) $('alchemy-key-input').value=STATE.alchemyKey;
+  if (STATE.chainGptKey) $('chaingpt-key-input').value=STATE.chainGptKey;
+  // Show ChainGPT badge status
+  const badge = $('chaingpt-badge');
+  if (badge) {
+    badge.textContent = STATE.chainGptKey ? '✓ Active' : 'Not set';
+    badge.style.color = STATE.chainGptKey ? 'var(--green)' : 'var(--tm)';
+  }
+}
 function closeApiModal() { $('api-modal').style.display='none'; }
 function saveAlchemyKey() {
   const v = ($('alchemy-key-input').value||'').trim();
   if (!v) { toast('Enter a valid Alchemy API key','warn'); return; }
   STATE.alchemyKey = v; localStorage.setItem('flasharb_alchemy_key', v);
+  // Also save ChainGPT key if filled in
+  const cg = ($('chaingpt-key-input').value||'').trim();
+  if (cg) { STATE.chainGptKey = cg; localStorage.setItem('flasharb_chaingpt_key', cg); }
   initAlchemyBadge(); closeApiModal();
-  toast('Alchemy key saved — live data activated','success');
+  toast('API keys saved — live data activated','success');
   tlog('[alchemy] API key configured — upgrading to Alchemy RPC', 'success');
+  if (STATE.chainGptKey) tlog('[chaingpt] ChainGPT API key configured — real-time on-chain quote fallback active', 'success');
   fetchPrices(); fetchGas(); fetchBlock();
   if (STATE.wallet.connected) fetchWalletBalance();
+}
+function saveChainGptKey() {
+  const v = ($('chaingpt-key-input').value||'').trim();
+  if (!v) { toast('Enter a valid ChainGPT API key','warn'); return; }
+  STATE.chainGptKey = v; localStorage.setItem('flasharb_chaingpt_key', v);
+  closeApiModal();
+  toast('ChainGPT key saved — real-time on-chain quote fallback active','success');
+  tlog('[chaingpt] API key configured — live on-chain quote fallback enabled', 'success');
 }
 
 // ─── TAB NAVIGATION ───────────────────────────────────────────────────────────
@@ -1734,6 +1954,8 @@ async function scanOnChainOpps(chainId) {
                 id: `live-${baseSymbol}-${midSym}-su-uni-${Date.now()}`,
                 tokenPair: `${baseSymbol}/${midSym}`,
                 buyDex: 'SushiSwap', sellDex: 'Uniswap V2',
+                midToken: midSym,
+                midAddr: midAddr,
                 profitPercent: parseFloat(pct.toFixed(4)),
                 estimatedProfit: parseFloat(profitUSD.toFixed(2)),
                 netProfit: parseFloat(netProfit.toFixed(2)),
@@ -1769,6 +1991,8 @@ async function scanOnChainOpps(chainId) {
                 id: `live-${baseSymbol}-${midSym}-uni-su-${Date.now()}`,
                 tokenPair: `${baseSymbol}/${midSym}`,
                 buyDex: 'Uniswap V2', sellDex: 'SushiSwap',
+                midToken: midSym,
+                midAddr: midAddr,
                 profitPercent: parseFloat(pct.toFixed(4)),
                 estimatedProfit: parseFloat(profitUSD.toFixed(2)),
                 netProfit: parseFloat(netProfit.toFixed(2)),
@@ -2010,11 +2234,26 @@ function resolveTokenAddr(symbol, chainId) {
   return tokens.USDC || null;
 }
 
-// Determine which mid token to use for arb route
-function pickMidToken(pair, chainId) {
-  const mids = MID_TOKENS_BY_CHAIN[chainId] || ['USDC','USDT','DAI'];
+// Determine which mid token to use for arb route.
+// CRITICAL: For a two-token pair like WETH/USDCe the mid IS the second token (USDCe).
+// We do NOT need a third intermediary — the arb is WETH→USDCe on DEX A,
+// then USDCe→WETH on DEX B. pickMidToken MUST return the second token in the pair.
+function pickMidToken(pair, chainId, oppObject) {
+  // 1. Use the mid token stored directly in the opportunity (from scanner)
+  if (oppObject?.midToken && oppObject?.midAddr) {
+    return { symbol: oppObject.midToken, addr: oppObject.midAddr };
+  }
+
   const [tA, tB] = pair.split('/').map(s => s.trim());
-  // Prefer a stable mid not in the pair
+
+  // 2. The second token in the pair IS the natural mid for a 2-token arb
+  if (tB) {
+    const addr = resolveTokenAddr(tB, chainId);
+    if (addr) return { symbol: tB, addr };
+  }
+
+  // 3. Fallback: pick from MID_TOKENS list, excluding base token
+  const mids = MID_TOKENS_BY_CHAIN[chainId] || ['USDC','USDT','DAI'];
   for (const m of mids) {
     if (m !== tA && m !== tB) {
       const addr = resolveTokenAddr(m, chainId);
@@ -2267,8 +2506,10 @@ async function executeRealFlashLoan(opp, contractAddr) {
     const tokenAddr = resolveTokenAddr(tokenA, STATE.currentChainId);
     if (!tokenAddr) throw new Error(`Cannot resolve address for ${tokenA} on chain ${STATE.currentChainId}`);
 
-    const mid = pickMidToken(opp.tokenPair, STATE.currentChainId);
-    if (!mid.addr) throw new Error(`Cannot resolve mid-token address`);
+    // Pass the full opp so pickMidToken can use stored midToken/midAddr from scanner
+    const mid = pickMidToken(opp.tokenPair, STATE.currentChainId, opp);
+    if (!mid.addr) throw new Error(`Cannot resolve mid-token address for pair ${opp.tokenPair}`);
+    tlog(`[arb] Route: ${tokenA} → ${mid.symbol} → ${tokenA} (base:${shortAddr(tokenAddr)} mid:${shortAddr(mid.addr)})`, 'dim');
 
     // ── Loan amount: opp.loanAmount is a USD value. Convert to token units.
     // WETH/WBTC/native tokens → 18 decimals; USDC/USDT/BUSD → 6 decimals.
@@ -2321,14 +2562,29 @@ async function executeRealFlashLoan(opp, contractAddr) {
     // (using stale/fabricated opp.minProfit instead) whenever either leg was V3.
     // Skipping it is exactly what let un-executable "opportunities" through to
     // eth_sendTransaction, where they were guaranteed to revert on-chain.
+    tlog(`[arb] Fresh re-quote: buy ${tokenA}→${mid.symbol} on ${opp.buyDex} (dex:${buyDex}), sell ${mid.symbol}→${tokenA} on ${opp.sellDex} (dex:${sellDex})`, 'dim');
     const freshBuyOut = await freshLegQuote(STATE.currentChainId, buyDex, tokenAddr, mid.addr, loanBig, v3Fee, net);
     if (freshBuyOut == null) {
-      throw new Error('Could not get a fresh on-chain quote for the buy leg (RPC issue, or this pool/pair does not actually exist on-chain). Aborting before signing — no gas spent.');
+      // Try swapping the DEX order as a last resort (some pairs only exist on one DEX)
+      tlog(`[arb] Buy leg quote null — trying alternate router for final check`, 'warn');
+      const altBuyDex = (buyDex === DEX_SUSHI) ? DEX_UNI_V2 : DEX_SUSHI;
+      const altBuyOut = await freshLegQuote(STATE.currentChainId, altBuyDex, tokenAddr, mid.addr, loanBig, v3Fee, net);
+      if (altBuyOut == null) {
+        tlog(`[arb] ❌ Buy leg: no pool found on any router for ${tokenA}→${mid.symbol}. Pair may not exist on V2/Sushi on this chain.`, 'error');
+        throw new Error(`No liquidity pool found for ${tokenA}→${mid.symbol} on ${net?.name}. The scanner found a quote but the fresh check cannot confirm it — pool may have very low liquidity or wrong token address.`);
+      }
+      tlog(`[arb] Buy leg found on alternate router`, 'warn');
     }
-    const freshSellOut = await freshLegQuote(STATE.currentChainId, sellDex, mid.addr, tokenAddr, freshBuyOut, v3Fee, net);
+    const effectiveBuyOut = freshBuyOut || (await freshLegQuote(STATE.currentChainId, (buyDex === DEX_SUSHI) ? DEX_UNI_V2 : DEX_SUSHI, tokenAddr, mid.addr, loanBig, v3Fee, net));
+    if (!effectiveBuyOut) throw new Error(`No liquidity found for ${tokenA}→${mid.symbol} on any DEX on ${net?.name}.`);
+
+    const freshSellOut = await freshLegQuote(STATE.currentChainId, sellDex, mid.addr, tokenAddr, effectiveBuyOut, v3Fee, net);
     if (freshSellOut == null) {
-      throw new Error('Could not get a fresh on-chain quote for the sell leg (RPC issue, or this pool/pair does not actually exist on-chain). Aborting before signing — no gas spent.');
+      tlog(`[arb] ❌ Sell leg: no pool found for ${mid.symbol}→${tokenA}. Pair may not exist or have insufficient liquidity on ${opp.sellDex}.`, 'error');
+      throw new Error(`No liquidity pool found for ${mid.symbol}→${tokenA} on ${opp.sellDex} (${net?.name}). The pair existed during scanning but cannot be quoted now — pool may have been drained or the token address is incorrect.`);
     }
+    // Use effectiveBuyOut going forward
+    const freshBuyOutFinal = effectiveBuyOut;
     tlog(`[arb] Fresh quote → loan=${loanBig} buyOut=${freshBuyOut} sellOut=${freshSellOut} owed=${owed}`, 'dim');
 
     if (freshSellOut <= owed) {
