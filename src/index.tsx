@@ -11,7 +11,7 @@ const NETWORKS: Record<string, any> = {
   '1': {
     name: 'Ethereum Mainnet', rpcKey: 'eth-mainnet', isTestnet: false, symbol: 'ETH', color: '#627eea',
     explorer: 'https://etherscan.io',
-    publicRpcs: ['https://ethereum.publicnode.com','https://rpc.ankr.com/eth','https://cloudflare-eth.com','https://eth.llamarpc.com'],
+    publicRpcs: ['https://ethereum-rpc.publicnode.com','https://eth.drpc.org','https://1rpc.io/eth','https://cloudflare-eth.com'],
     aavePool: '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2',
     uniRouter: '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D',
     sushiRouter: '0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F',
@@ -27,7 +27,7 @@ const NETWORKS: Record<string, any> = {
   '42161': {
     name: 'Arbitrum One', rpcKey: 'arb-mainnet', isTestnet: false, symbol: 'ETH', color: '#28a0f0',
     explorer: 'https://arbiscan.io',
-    publicRpcs: ['https://arb1.arbitrum.io/rpc','https://rpc.ankr.com/arbitrum','https://arbitrum.llamarpc.com'],
+    publicRpcs: ['https://arb1.arbitrum.io/rpc','https://arbitrum-one-rpc.publicnode.com','https://arbitrum.drpc.org'],
     aavePool: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
     uniRouter: '0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24',
     sushiRouter: '0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506',
@@ -35,7 +35,7 @@ const NETWORKS: Record<string, any> = {
   '10': {
     name: 'Optimism', rpcKey: 'opt-mainnet', isTestnet: false, symbol: 'ETH', color: '#ff0420',
     explorer: 'https://optimistic.etherscan.io',
-    publicRpcs: ['https://mainnet.optimism.io','https://rpc.ankr.com/optimism','https://optimism.llamarpc.com'],
+    publicRpcs: ['https://mainnet.optimism.io','https://optimism-rpc.publicnode.com','https://optimism.drpc.org'],
     aavePool: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
     uniRouter: '0x4A7b5Da61326A6379179b40d00F57E5bbDC962c2',
     sushiRouter: '0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506',
@@ -43,7 +43,7 @@ const NETWORKS: Record<string, any> = {
   '8453': {
     name: 'Base Mainnet', rpcKey: 'base-mainnet', isTestnet: false, symbol: 'ETH', color: '#0052ff',
     explorer: 'https://basescan.org',
-    publicRpcs: ['https://mainnet.base.org','https://rpc.ankr.com/base','https://base.llamarpc.com'],
+    publicRpcs: ['https://mainnet.base.org','https://base-rpc.publicnode.com','https://base.drpc.org'],
     aavePool: '0xA238Dd80C259a72e81d7e4664a9801593F98d1c5',
     uniRouter: '0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24',
     sushiRouter: '0x6BDED42c6DA8FBf0d2bA55B2fa120C5e0c8D7891',
@@ -51,7 +51,7 @@ const NETWORKS: Record<string, any> = {
   '56': {
     name: 'BNB Smart Chain', rpcKey: 'bnb-mainnet', isTestnet: false, symbol: 'BNB', color: '#f0b90b',
     explorer: 'https://bscscan.com',
-    publicRpcs: ['https://bsc-dataseed.binance.org','https://rpc.ankr.com/bsc','https://bsc.llamarpc.com'],
+    publicRpcs: ['https://bsc-dataseed1.binance.org','https://bsc-rpc.publicnode.com','https://bsc.drpc.org'],
     aavePool: '0x6807dc923806fE8Fd134338EABCA509979a7e0cB',
     uniRouter: '0x10ED43C718714eb63d5aA57B78B54704E256024E',
     sushiRouter: '0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506',

@@ -1,0 +1,56 @@
+{
+ "1": [
+  "https://ethereum-rpc.publicnode.com",
+  "https://eth.drpc.org",
+  "https://1rpc.io/eth",
+  "https://cloudflare-eth.com",
+  "https://rpc.mevblocker.io",
+  "https://rpc.flashbots.net"
+ ],
+ "10": [
+  "https://mainnet.optimism.io",
+  "https://optimism-rpc.publicnode.com",
+  "https://optimism.drpc.org",
+  "https://1rpc.io/op"
+ ],
+ "56": [
+  "https://bsc-dataseed1.binance.org",
+  "https://bsc-rpc.publicnode.com",
+  "https://bsc.drpc.org",
+  "https://1rpc.io/bnb",
+  "https://bsc.rpc.blxrbdn.com"
+ ],
+ "137": [
+  "https://polygon-bor-rpc.publicnode.com",
+  "https://polygon.drpc.org",
+  "https://1rpc.io/matic"
+ ],
+ "8453": [
+  "https://mainnet.base.org",
+  "https://base-rpc.publicnode.com",
+  "https://base.drpc.org",
+  "https://1rpc.io/base"
+ ],
+ "42161": [
+  "https://arb1.arbitrum.io/rpc",
+  "https://arbitrum-one-rpc.publicnode.com",
+  "https://arbitrum.drpc.org",
+  "https://1rpc.io/arb"
+ ],
+ "80002": [
+  "https://polygon-amoy-bor-rpc.publicnode.com",
+  "https://polygon-amoy.drpc.org"
+ ],
+ "84532": [
+  "https://sepolia.base.org",
+  "https://base-sepolia-rpc.publicnode.com"
+ ],
+ "421614": [
+  "https://sepolia-rollup.arbitrum.io/rpc",
+  "https://arbitrum-sepolia-rpc.publicnode.com"
+ ],
+ "11155111": [
+  "https://ethereum-sepolia-rpc.publicnode.com",
+  "https://1rpc.io/sepolia"
+ ]
+}

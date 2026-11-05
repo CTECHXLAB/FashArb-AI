@@ -41,13 +41,12 @@
     <!-- ChainGPT section -->
     <div class="info-box" style="background:rgba(124,58,237,0.12);border:1px solid rgba(124,58,237,0.35);border-radius:8px;padding:10px 14px;margin-bottom:14px;">
       <i class="fas fa-brain" style="color:#a78bfa;margin-right:8px;"></i>
-      <strong style="color:#a78bfa;">ChainGPT</strong> — AI-powered real-time on-chain quote oracle.
-      Used as <em>final fallback</em> when all DEX RPC calls fail. Get your key at
+      <strong style="color:#a78bfa;">ChainGPT</strong> — <strong>Experimental / not used for trades.</strong> Trade safety checks use only direct on-chain eth_call quotes; an LLM cannot read chain state, so ChainGPT never approves or aborts a trade. Get a key at
       <a href="https://app.chaingpt.org" target="_blank" style="color:#a78bfa;text-decoration:underline;">app.chaingpt.org</a>.
       Status: <span id="chaingpt-badge" style="font-weight:700;">Not set</span>
     </div>
     <div class="field-group mb-4">
-      <label class="field-label">ChainGPT API Key <span style="color:var(--tm);font-weight:400;">(Optional — enables AI quote fallback)</span></label>
+      <label class="field-label">ChainGPT API Key <span style="color:var(--tm);font-weight:400;">(Optional — experimental, no effect on execution)</span></label>
       <input type="text" id="chaingpt-key-input" placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" class="input-field"/>
     </div>
 

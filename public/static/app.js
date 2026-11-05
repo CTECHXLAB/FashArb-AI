@@ -7,52 +7,19 @@
 
 // ─── PUBLIC RPC ENDPOINTS ─────────────────────────────────────────────────────
 // CORS-safe endpoints first (tested browser-compatible), then fallbacks.
-// ankr.com/eth is the most reliably CORS-open for browser fetch().
+// All endpoints below were verified live + CORS-open (see README: RPC verification).
 const PUBLIC_RPCS = {
-  '1':        [
-    'https://rpc.ankr.com/eth',
-    'https://eth.drpc.org',
-    'https://ethereum-rpc.publicnode.com',
-    'https://1rpc.io/eth',
-    'https://cloudflare-eth.com',
-    'https://eth.llamarpc.com',
-  ],
-  '137':      [
-    'https://rpc.ankr.com/polygon',
-    'https://polygon.drpc.org',
-    'https://polygon-rpc.com',
-    'https://1rpc.io/matic',
-    'https://polygon-bor-rpc.publicnode.com',
-  ],
-  '42161':    [
-    'https://rpc.ankr.com/arbitrum',
-    'https://arb1.arbitrum.io/rpc',
-    'https://arbitrum.drpc.org',
-    'https://1rpc.io/arb',
-    'https://arbitrum.llamarpc.com',
-  ],
-  '10':       [
-    'https://rpc.ankr.com/optimism',
-    'https://mainnet.optimism.io',
-    'https://optimism.drpc.org',
-    'https://1rpc.io/op',
-  ],
-  '8453':     [
-    'https://rpc.ankr.com/base',
-    'https://mainnet.base.org',
-    'https://base.drpc.org',
-    'https://1rpc.io/base',
-  ],
-  '56':       [
-    'https://rpc.ankr.com/bsc',
-    'https://bsc-dataseed1.binance.org',
-    'https://bsc.drpc.org',
-    'https://1rpc.io/bnb',
-  ],
-  '11155111': ['https://rpc.ankr.com/eth_sepolia','https://rpc.sepolia.org','https://ethereum-sepolia.publicnode.com'],
-  '80002':    ['https://rpc-amoy.polygon.technology','https://rpc.ankr.com/polygon_amoy'],
-  '421614':   ['https://sepolia-rollup.arbitrum.io/rpc'],
-  '84532':    ['https://sepolia.base.org'],
+  // Verified live (eth_chainId match + CORS open). rpc.ankr.com now requires an API key — removed.
+  '1':        ['https://ethereum-rpc.publicnode.com','https://eth.drpc.org','https://cloudflare-eth.com'],
+  '137':      ['https://polygon-bor-rpc.publicnode.com','https://polygon.drpc.org'],
+  '42161':    ['https://arb1.arbitrum.io/rpc','https://arbitrum-one-rpc.publicnode.com','https://arbitrum.drpc.org'],
+  '10':       ['https://mainnet.optimism.io','https://optimism-rpc.publicnode.com','https://optimism.drpc.org'],
+  '8453':     ['https://mainnet.base.org','https://base-rpc.publicnode.com','https://base.drpc.org'],
+  '56':       ['https://bsc-dataseed1.binance.org','https://bsc-rpc.publicnode.com','https://bsc.drpc.org'],
+  '11155111': ['https://ethereum-sepolia-rpc.publicnode.com','https://sepolia.gateway.tenderly.co'],
+  '80002':    ['https://polygon-amoy-bor-rpc.publicnode.com','https://polygon-amoy.drpc.org'],
+  '421614':   ['https://sepolia-rollup.arbitrum.io/rpc','https://arbitrum-sepolia-rpc.publicnode.com'],
+  '84532':    ['https://sepolia.base.org','https://base-sepolia-rpc.publicnode.com'],
 };
 
 // ─── PRIVATE MEMPOOL / MEV-PROTECTION RPC MAP ─────────────────────────────────
@@ -60,9 +27,9 @@ const PUBLIC_RPCS = {
 // searchers cannot see them, so no front-running or sandwich attacks.
 // Flashbots Protect (Ethereum), MEV Blocker (Ethereum), BloxRoute (Polygon), etc.
 const PRIVATE_RPCS = {
-  '1':     'https://rpc.flashbots.net',          // Flashbots Protect — Ethereum
-  '137':   'https://polygon.rpc.blxrbdn.com',    // BloxRoute — Polygon
-  '42161': 'https://arb-protect.flashbots.net',  // Flashbots — Arbitrum
+  '1':     'https://rpc.flashbots.net',          // Flashbots Protect — Ethereum (verified: chainId 0x1)
+  // '137': no private relay reachable/verified — falls back to the normal public mempool
+  // '42161': Flashbots has no Arbitrum relay (endpoint dead) — Arbitrum uses a sequencer, no public mempool
   '10':    'https://rpc.optimism.io',            // Optimism (no MEV issue — sequencer)
   '8453':  'https://mainnet.base.org',           // Base (no MEV issue — sequencer)
   '56':    'https://bsc.rpc.blxrbdn.com',        // BloxRoute — BSC
@@ -73,14 +40,14 @@ const NET_REGISTRY = {
   // ── aaveProvider = Aave V3 PoolAddressesProvider (NOT the Pool itself) ──────
   // Constructor: IPoolAddressesProvider(_addressProvider).getPool() is called in constructor
   // Using wrong address (the Pool) causes "execution reverted" — must use PoolAddressesProvider
-  '1':        { name:'Ethereum Mainnet',  rpcKey:'eth-mainnet',    isTestnet:false, symbol:'ETH',       color:'#627eea', explorer:'https://etherscan.io',            hexId:'0x1',     aaveProvider:'0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9', uniRouter:'0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D', sushiRouter:'0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F', uniV3Router:'0xE592427A0AEce92De3Edee1F18E0157C05861564', uniV3Quoter:'0x61fFE014bA17989E743c5F6cB21bF9697530B21e' },
-  '137':      { name:'Polygon Mainnet',   rpcKey:'polygon-mainnet',isTestnet:false, symbol:'MATIC',     color:'#8247e5', explorer:'https://polygonscan.com',          hexId:'0x89',    aaveProvider:'0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb', uniRouter:'0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff', sushiRouter:'0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506', uniV3Router:'0xE592427A0AEce92De3Edee1F18E0157C05861564', uniV3Quoter:'0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6' },
-  '42161':    { name:'Arbitrum One',      rpcKey:'arb-mainnet',    isTestnet:false, symbol:'ETH',       color:'#28a0f0', explorer:'https://arbiscan.io',              hexId:'0xa4b1',  aaveProvider:'0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb', uniRouter:'0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24', sushiRouter:'0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506', uniV3Router:'0xE592427A0AEce92De3Edee1F18E0157C05861564', uniV3Quoter:'0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6' },
-  '10':       { name:'Optimism',          rpcKey:'opt-mainnet',    isTestnet:false, symbol:'ETH',       color:'#ff0420', explorer:'https://optimistic.etherscan.io',  hexId:'0xa',     aaveProvider:'0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb', uniRouter:'0x4A7b5Da61326A6379179b40d00F57E5bbDC962c2', sushiRouter:'0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506', uniV3Router:'0xE592427A0AEce92De3Edee1F18E0157C05861564', uniV3Quoter:'0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6' },
-  '8453':     { name:'Base Mainnet',      rpcKey:'base-mainnet',   isTestnet:false, symbol:'ETH',       color:'#0052ff', explorer:'https://basescan.org',             hexId:'0x2105',  aaveProvider:'0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D', uniRouter:'0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24', sushiRouter:'0x6BDED42c6DA8FBf0d2bA55B2fa120C5e0c8D7891', uniV3Router:'0x2626664c2603336E57B271c5C0b26F421741e481', uniV3Quoter:'0x3d4e44Eb1374240CE5F1B136588eDad14f9253A5' },
+  '1':        { name:'Ethereum Mainnet',  rpcKey:'eth-mainnet',    isTestnet:false, symbol:'ETH',       color:'#627eea', explorer:'https://etherscan.io',            hexId:'0x1',     aaveProvider:'0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e', uniRouter:'0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D', sushiRouter:'0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F', uniV3Router:'0xE592427A0AEce92De3Edee1F18E0157C05861564', uniV3Quoter:'0x61fFE014bA17989E743c5F6cB21bF9697530B21e' },
+  '137':      { name:'Polygon Mainnet',   rpcKey:'polygon-mainnet',isTestnet:false, symbol:'MATIC',     color:'#8247e5', explorer:'https://polygonscan.com',          hexId:'0x89',    aaveProvider:'0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb', uniRouter:'0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff', sushiRouter:'0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506', uniV3Router:'0xE592427A0AEce92De3Edee1F18E0157C05861564', uniV3Quoter:'0x61fFE014bA17989E743c5F6cB21bF9697530B21e' },
+  '42161':    { name:'Arbitrum One',      rpcKey:'arb-mainnet',    isTestnet:false, symbol:'ETH',       color:'#28a0f0', explorer:'https://arbiscan.io',              hexId:'0xa4b1',  aaveProvider:'0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb', uniRouter:'0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24', sushiRouter:'0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506', uniV3Router:'0xE592427A0AEce92De3Edee1F18E0157C05861564', uniV3Quoter:'0x61fFE014bA17989E743c5F6cB21bF9697530B21e' },
+  '10':       { name:'Optimism',          rpcKey:'opt-mainnet',    isTestnet:false, symbol:'ETH',       color:'#ff0420', explorer:'https://optimistic.etherscan.io',  hexId:'0xa',     aaveProvider:'0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb', uniRouter:'0x4A7b5Da61326A6379179b40d00F57E5bbDC962c2', sushiRouter:'0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506', uniV3Router:'0xE592427A0AEce92De3Edee1F18E0157C05861564', uniV3Quoter:'0x61fFE014bA17989E743c5F6cB21bF9697530B21e' },
+  '8453':     { name:'Base Mainnet',      rpcKey:'base-mainnet',   isTestnet:false, symbol:'ETH',       color:'#0052ff', explorer:'https://basescan.org',             hexId:'0x2105',  aaveProvider:'0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D', uniRouter:'0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24', sushiRouter:'0x6BDED42c6DA8FBf0d2bA55B2fa120C5e0c8D7891', uniV3Router:'0x2626664c2603336E57B271c5C0b26F421741e481', uniV3Quoter:'0x222ca98f00ed15b1fae10b61c277703a194cf5d2' },
   '56':       { name:'BNB Smart Chain',   rpcKey:'bnb-mainnet',    isTestnet:false, symbol:'BNB',       color:'#f0b90b', explorer:'https://bscscan.com',              hexId:'0x38',    aaveProvider:'0xff75B6da14FfbbfD355Daf7a2731456b3562Ba6D', uniRouter:'0x10ED43C718714eb63d5aA57B78B54704E256024E', sushiRouter:'0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506', uniV3Router:'0xB971eF87ede563556b2ED4b1C0b0019111Dd85d2', uniV3Quoter:'0x78D78E420Da98ad378D7799bE8f4AF69033EB077' },
-  '11155111': { name:'Sepolia Testnet',   rpcKey:'eth-sepolia',    isTestnet:true,  symbol:'SepoliaETH',color:'#cfb100', explorer:'https://sepolia.etherscan.io',     hexId:'0xaa36a7',aaveProvider:'0x012bAC54348C0E635dCAc9D5FB99f06F24136C9A', uniRouter:'0xeE567Fe1712Faf6149d80dA1E6934E354124CfE3', sushiRouter:'0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506', uniV3Router:'0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48', uniV3Quoter:'0xEd1f6473345F45b75833fd55D191EBE6d39fC450', faucets:[{name:'Alchemy Sepolia Faucet',url:'https://www.alchemy.com/faucets/ethereum-sepolia'},{name:'Chainlink Faucet',url:'https://faucets.chain.link/sepolia'}] },
-  '80002':    { name:'Polygon Amoy',      rpcKey:'polygon-amoy',   isTestnet:true,  symbol:'MATIC',     color:'#8247e5', explorer:'https://amoy.polygonscan.com',     hexId:'0x13882', aaveProvider:'0xeb7A89BB6C93e82BEB6B4B49E07d0f4c8c7d8898', uniRouter:'0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff', sushiRouter:'0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506', uniV3Router:'0xE592427A0AEce92De3Edee1F18E0157C05861564', uniV3Quoter:'0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6', faucets:[{name:'Polygon Faucet',url:'https://faucet.polygon.technology/'},{name:'Alchemy Amoy Faucet',url:'https://www.alchemy.com/faucets/polygon-amoy'}] },
+  '11155111': { name:'Sepolia Testnet',   rpcKey:'eth-sepolia',    isTestnet:true,  symbol:'SepoliaETH',color:'#cfb100', explorer:'https://sepolia.etherscan.io',     hexId:'0xaa36a7',aaveProvider:'0x012bAC54348C0E635dCAc9D5FB99f06F24136C9A', uniRouter:'0xeE567Fe1712Faf6149d80dA1E6934E354124CfE3', sushiRouter:'0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506', uniV3Router:'0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E', uniV3Quoter:'0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3', faucets:[{name:'Alchemy Sepolia Faucet',url:'https://www.alchemy.com/faucets/ethereum-sepolia'},{name:'Chainlink Faucet',url:'https://faucets.chain.link/sepolia'}] },
+  '80002':    { name:'Polygon Amoy',      rpcKey:'polygon-amoy',   isTestnet:true,  symbol:'MATIC',     color:'#8247e5', explorer:'https://amoy.polygonscan.com',     hexId:'0x13882', aaveProvider:'0xeb7A89BB6C93e82BEB6B4B49E07d0f4c8c7d8898', uniRouter:'0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff', sushiRouter:'0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506', uniV3Router:'0xE592427A0AEce92De3Edee1F18E0157C05861564', uniV3Quoter:'', faucets:[{name:'Polygon Faucet',url:'https://faucet.polygon.technology/'},{name:'Alchemy Amoy Faucet',url:'https://www.alchemy.com/faucets/polygon-amoy'}] },
   '421614':   { name:'Arbitrum Sepolia',  rpcKey:'arb-sepolia',    isTestnet:true,  symbol:'ETH',       color:'#28a0f0', explorer:'https://sepolia.arbiscan.io',      hexId:'0x66eee', aaveProvider:'0x4DA5c4da71C5a167171cC839487536d86e083483', uniRouter:'0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24', sushiRouter:'0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506', uniV3Router:'0x101F443B4d1b059569D643917553c771E1b9663E', uniV3Quoter:'0x2779a0CC1c3e0E44D2542EC3e79e3864Ae93Ef0C', faucets:[{name:'Alchemy Arb Faucet',url:'https://www.alchemy.com/faucets/arbitrum-sepolia'}] },
   '84532':    { name:'Base Sepolia',      rpcKey:'base-sepolia',   isTestnet:true,  symbol:'ETH',       color:'#0052ff', explorer:'https://sepolia.basescan.org',     hexId:'0x14a34', aaveProvider:'0xd449FeD49d9C443688d6816fE6872F21402e41De', uniRouter:'0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24', sushiRouter:'0x6BDED42c6DA8FBf0d2bA55B2fa120C5e0c8D7891', uniV3Router:'0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4', uniV3Quoter:'0xC5290058841028F1614F3A6F0F5816cAd0df5E27', faucets:[{name:'Alchemy Base Faucet',url:'https://www.alchemy.com/faucets/base-sepolia'}] },
 };
@@ -708,6 +675,9 @@ async function freshV3Quote(chainId, quoterAddr, tokenIn, tokenOut, fee, amountI
   const hit = rpcResults.find(r => r.status === 'fulfilled' && r.value !== null);
   return hit ? hit.value : null;
 }
+// ─── CHAINGPT (EXPERIMENTAL — NOT USED IN ANY TRADE DECISION) ───────────────
+// An LLM cannot run eth_call; its numbers are unverified. This helper is intentionally NOT wired into
+// freshLegQuote or executeRealFlashLoan. Endpoints/model below are unverified against ChainGPT docs.
 // ─── CHAINGPT ON-CHAIN QUOTE INTEGRATION ─────────────────────────────────────
 // ChainGPT provides real-time mainnet transaction data and AI-powered on-chain
 // analytics. Used as the FINAL fallback when all DEX RPC quote attempts fail.
@@ -823,32 +793,17 @@ async function fetchChainGptQuote(chainId, tokenIn, tokenOut, amountIn, router) 
   return null; // both methods exhausted
 }
 
-// Dex-agnostic fresh-quote dispatcher — routes to the V2 router or the V3 quoter.
-// Fallback chain: MetaMask eth_call → all public RPCs (parallel) → ChainGPT API.
-// If V3 quote fails falls back to V2 (handles remapped exotic DEXes gracefully).
+// Dex-agnostic fresh-quote dispatcher — quotes EXACTLY the venue the contract will trade on.
+// Redundancy comes from querying many RPC endpoints (see freshV2Quote/freshV3Quote), NEVER from
+// substituting a different router/DEX: a quote from venue Y says nothing about a fill on venue X,
+// so a cross-venue fallback would let the pre-sign guard approve a trade that reverts or loses money.
+// Returns BigInt amountOut, or null when this venue genuinely cannot be quoted.
 async function freshLegQuote(chainId, dex, tokenIn, tokenOut, amountIn, v3Fee, net) {
   if (dex === DEX_UNI_V3) {
-    const v3Result = await freshV3Quote(chainId, net.uniV3Quoter, tokenIn, tokenOut, v3Fee, amountIn);
-    if (v3Result) return v3Result;
-    // V3 quote can fail if pool doesn't exist at this fee tier — fall back to V2
-    tlog('[arb] V3 quote returned null — trying V2 router as fallback', 'dim');
-    const v2Fallback = await freshV2Quote(chainId, net.uniRouter, amountIn, [tokenIn, tokenOut]);
-    if (v2Fallback) return v2Fallback;
-    // Final fallback: ChainGPT real-time on-chain quote
-    tlog('[arb] V2 fallback null — querying ChainGPT for live on-chain quote…', 'dim');
-    return await fetchChainGptQuote(chainId, tokenIn, tokenOut, amountIn, net.uniRouter);
+    return await freshV3Quote(chainId, net.uniV3Quoter, tokenIn, tokenOut, v3Fee, amountIn);
   }
   const router = (dex === DEX_SUSHI) ? net.sushiRouter : net.uniRouter;
-  // If V2 fails try the other V2 router
-  const primary = await freshV2Quote(chainId, router, amountIn, [tokenIn, tokenOut]);
-  if (primary) return primary;
-  const altRouter = (dex === DEX_SUSHI) ? net.uniRouter : net.sushiRouter;
-  tlog('[arb] Primary router returned null — trying alternate V2 router', 'dim');
-  const alt = await freshV2Quote(chainId, altRouter, amountIn, [tokenIn, tokenOut]);
-  if (alt) return alt;
-  // Final fallback: ChainGPT real-time on-chain quote (best router for this dex)
-  tlog('[arb] All RPC routers returned null — querying ChainGPT for live on-chain quote…', 'dim');
-  return await fetchChainGptQuote(chainId, tokenIn, tokenOut, amountIn, router);
+  return await freshV2Quote(chainId, router, amountIn, [tokenIn, tokenOut]);
 }
 
 // Encode constructor(address _addressProvider, address _uniV2Router, address _sushiRouter,
@@ -1216,9 +1171,9 @@ function initAlchemyBadge() {
   }
   // Log ChainGPT status on init
   if (STATE.chainGptKey) {
-    tlog('[chaingpt] ✅ API key loaded — real-time on-chain quote fallback ENABLED', 'success');
+    tlog('[chaingpt] ✅ API key loaded — stored (experimental; not used in trade decisions)', 'success');
   } else {
-    tlog('[chaingpt] ℹ️ No API key — add at Settings → API Keys for AI-powered quote fallback', 'dim');
+    tlog('[chaingpt] ℹ️ No API key — optional, experimental', 'dim');
   }
 }
 function openApiModal() {
@@ -1243,7 +1198,7 @@ function saveAlchemyKey() {
   initAlchemyBadge(); closeApiModal();
   toast('API keys saved — live data activated','success');
   tlog('[alchemy] API key configured — upgrading to Alchemy RPC', 'success');
-  if (STATE.chainGptKey) tlog('[chaingpt] ChainGPT API key configured — real-time on-chain quote fallback active', 'success');
+  if (STATE.chainGptKey) tlog('[chaingpt] ChainGPT API key configured — stored (experimental; not used in trade decisions)', 'success');
   fetchPrices(); fetchGas(); fetchBlock();
   if (STATE.wallet.connected) fetchWalletBalance();
 }
@@ -1252,8 +1207,8 @@ function saveChainGptKey() {
   if (!v) { toast('Enter a valid ChainGPT API key','warn'); return; }
   STATE.chainGptKey = v; localStorage.setItem('flasharb_chaingpt_key', v);
   closeApiModal();
-  toast('ChainGPT key saved — real-time on-chain quote fallback active','success');
-  tlog('[chaingpt] API key configured — live on-chain quote fallback enabled', 'success');
+  toast('ChainGPT key saved (experimental, not used for trades)','success');
+  tlog('[chaingpt] API key configured — stored (experimental)', 'success');
 }
 
 // ─── TAB NAVIGATION ───────────────────────────────────────────────────────────
@@ -1699,7 +1654,7 @@ async function switchWalletNetwork() {
       await window.ethereum.request({method:'wallet_switchEthereumChain',params:[{chainId:net.hexId}]});
     } catch(e) {
       if (e.code===4902) {
-        try { await window.ethereum.request({method:'wallet_addEthereumChain',params:[{chainId:net.hexId,chainName:net.name,rpcUrls:[PUBLIC_RPCS[newChain]?.[0]||'https://rpc.ankr.com'],blockExplorerUrls:[net.explorer],nativeCurrency:{name:net.symbol,symbol:net.symbol,decimals:18}}]}); }
+        try { await window.ethereum.request({method:'wallet_addEthereumChain',params:[{chainId:net.hexId,chainName:net.name,rpcUrls:[PUBLIC_RPCS[newChain]?.[0]||'https://ethereum-rpc.publicnode.com'],blockExplorerUrls:[net.explorer],nativeCurrency:{name:net.symbol,symbol:net.symbol,decimals:18}}]}); }
         catch(e2) { toast('Failed to add network','error'); return; }
       } else { toast('Network switch cancelled','warn'); return; }
     }
@@ -1900,8 +1855,13 @@ async function scanOnChainOpps(chainId) {
 
   // Helper: pick loan size & decimals for a token symbol
   function loanConfig(sym) {
-    if (sym === 'WBTC' || sym === 'BTCB') return { sizes: LOAN_BTC, decimals: 8 };
-    if (['USDC','USDCe','USDT','DAI','BUSD'].includes(sym)) return { sizes: LOAN_USDC, decimals: 6 };
+    // BSC-pegged stables and BTCB are 18-decimals; everywhere else USDC/USDT are 6 and WBTC is 8.
+    const bsc = chainId === 56;
+    if (sym === 'BTCB' || (sym === 'WBTC' && bsc)) return { sizes: LOAN_BTC.map(x => x * 10n**10n), decimals: 18 };
+    if (sym === 'WBTC') return { sizes: LOAN_BTC, decimals: 8 };
+    if (['USDC','USDCe','USDT','DAI','BUSD'].includes(sym)) {
+      return bsc ? { sizes: LOAN_USDC.map(x => x * 10n**12n), decimals: 18 } : { sizes: LOAN_USDC, decimals: 6 };
+    }
     return { sizes: LOAN_ETH, decimals: 18 };
   }
 
@@ -2404,7 +2364,7 @@ async function confirmSign() {
   // isRouteExecutable() here (not just inside executeRealFlashLoan) means clicking
   // "Execute" on a Balancer/Curve/Camelot/etc. opportunity goes straight to the
   // simulator instead of surfacing a confusing on-chain-guard error.
-  if (contractAddr && walletConnected && window.ethereum && isRouteExecutable(o)) {
+  if (contractAddr && walletConnected && window.ethereum && isRouteExecutable(o) && o.source === 'live') {
     await executeRealFlashLoan(o, contractAddr);
     return;
   }
@@ -2480,10 +2440,13 @@ async function broadcastToPrivateRelay(chainId, rawSignedTx) {
 async function executeRealFlashLoan(opp, contractAddr) {
   const net = NET_REGISTRY[STATE.currentChainId];
 
-  // NOTE: The source-check guard ("opp.source !== 'live'") has been removed.
-  // The scanner now returns source:'live' from real on-chain getAmountsOut quotes,
-  // and ALL opportunities are verified by the fresh-quote guard below before any
-  // tx is signed — that is the correct and sufficient anti-fabrication mechanism.
+  // SAFETY: simulated (backend-generated) opportunities must never reach a real signature.
+  // Only opportunities produced by the live on-chain scanner (source:'live') may execute;
+  // those are additionally re-quoted on the exact executing venues below before signing.
+  if (opp.source !== 'live') {
+    toast('Simulated opportunity — real execution blocked. Run the Live On-Chain scan and pick a live opportunity.', 'error');
+    throw new Error("Simulated opportunity: real execution blocked. Nothing was signed.");
+  }
 
   $('sign-confirm-btn').disabled=true;
   $('sign-confirm-btn').innerHTML='<i class="fas fa-circle-notch fa-spin mr1"></i>Preparing tx...';
@@ -2565,25 +2528,16 @@ async function executeRealFlashLoan(opp, contractAddr) {
     tlog(`[arb] Fresh re-quote: buy ${tokenA}→${mid.symbol} on ${opp.buyDex} (dex:${buyDex}), sell ${mid.symbol}→${tokenA} on ${opp.sellDex} (dex:${sellDex})`, 'dim');
     const freshBuyOut = await freshLegQuote(STATE.currentChainId, buyDex, tokenAddr, mid.addr, loanBig, v3Fee, net);
     if (freshBuyOut == null) {
-      // Try swapping the DEX order as a last resort (some pairs only exist on one DEX)
-      tlog(`[arb] Buy leg quote null — trying alternate router for final check`, 'warn');
-      const altBuyDex = (buyDex === DEX_SUSHI) ? DEX_UNI_V2 : DEX_SUSHI;
-      const altBuyOut = await freshLegQuote(STATE.currentChainId, altBuyDex, tokenAddr, mid.addr, loanBig, v3Fee, net);
-      if (altBuyOut == null) {
-        tlog(`[arb] ❌ Buy leg: no pool found on any router for ${tokenA}→${mid.symbol}. Pair may not exist on V2/Sushi on this chain.`, 'error');
-        throw new Error(`No liquidity pool found for ${tokenA}→${mid.symbol} on ${net?.name}. The scanner found a quote but the fresh check cannot confirm it — pool may have very low liquidity or wrong token address.`);
-      }
-      tlog(`[arb] Buy leg found on alternate router`, 'warn');
+      tlog(`[arb] ❌ Buy leg: cannot quote ${tokenA}→${mid.symbol} on ${opp.buyDex}. Aborting before signing — no gas spent.`, 'error');
+      throw new Error(`Cannot quote ${tokenA}→${mid.symbol} on ${opp.buyDex} (${net?.name}): no pool/router response from any RPC. Nothing was signed.`);
     }
-    const effectiveBuyOut = freshBuyOut || (await freshLegQuote(STATE.currentChainId, (buyDex === DEX_SUSHI) ? DEX_UNI_V2 : DEX_SUSHI, tokenAddr, mid.addr, loanBig, v3Fee, net));
-    if (!effectiveBuyOut) throw new Error(`No liquidity found for ${tokenA}→${mid.symbol} on any DEX on ${net?.name}.`);
+    const effectiveBuyOut = freshBuyOut;
 
     const freshSellOut = await freshLegQuote(STATE.currentChainId, sellDex, mid.addr, tokenAddr, effectiveBuyOut, v3Fee, net);
     if (freshSellOut == null) {
-      tlog(`[arb] ❌ Sell leg: no pool found for ${mid.symbol}→${tokenA}. Pair may not exist or have insufficient liquidity on ${opp.sellDex}.`, 'error');
-      throw new Error(`No liquidity pool found for ${mid.symbol}→${tokenA} on ${opp.sellDex} (${net?.name}). The pair existed during scanning but cannot be quoted now — pool may have been drained or the token address is incorrect.`);
+      tlog(`[arb] ❌ Sell leg: cannot quote ${mid.symbol}→${tokenA} on ${opp.sellDex}. Aborting before signing — no gas spent.`, 'error');
+      throw new Error(`Cannot quote ${mid.symbol}→${tokenA} on ${opp.sellDex} (${net?.name}): no pool/router response from any RPC. Nothing was signed.`);
     }
-    // Use effectiveBuyOut going forward
     const freshBuyOutFinal = effectiveBuyOut;
     tlog(`[arb] Fresh quote → loan=${loanBig} buyOut=${freshBuyOut} sellOut=${freshSellOut} owed=${owed}`, 'dim');
 
